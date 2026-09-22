@@ -194,10 +194,15 @@ export async function setup(ctx: Plugin.Context) {
                 stripHallucinations(view.messages, state.idFormat)
                 assignMessageRefs(state, view.messages)
                 // Compaction may select only a prefix; block origins can be in the retained tail.
-                syncCompressionBlocks(state, logger, messages)
+                const blocksChanged = syncCompressionBlocks(state, logger, messages)
                 await syncToolCache(state, config, logger, view.messages)
                 buildToolIdList(state, view.messages)
                 prune(state, logger, config, view.messages, view.summaryBase)
+                // Write through block-liveness changes so a
+                // server restart cannot lose them to a later stale save.
+                if (blocksChanged) {
+                    await saveSessionState(state, logger)
+                }
                 await injectExtendedSubAgentResults(
                     client,
                     state,

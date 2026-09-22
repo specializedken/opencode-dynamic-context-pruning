@@ -165,3 +165,54 @@ test("prune injects compressed summary into LLM context after sync keeps block a
     // 锚点消息保留
     assert.ok(messages.some((m) => m.info.id === anchorMsgId))
 })
+
+test("syncCompressionBlocks keeps a user-decompressed block inactive when its origin is missing", () => {
+    const state = createSessionState()
+    const messages = [msg("msg-anchor"), msg("msg-1")]
+    const block = buildBlock("msg-anchor", "msg-compress-missing", ["msg-1"], "summary")
+    block.active = false
+    block.deactivatedByUser = true
+    state.prune.messages.blocksById.set(1, block)
+    state.prune.messages.byMessageId.set("msg-1", { allBlockIds: [1], activeBlockIds: [] } as any)
+
+    const changed = syncCompressionBlocks(state, new Logger(false), messages)
+
+    assert.equal(block.active, false)
+    assert.equal(state.prune.messages.activeBlockIds.has(1), false)
+    assert.equal(changed, false)
+})
+
+test("syncCompressionBlocks retires blocks consumed by a merge whose origin is missing", () => {
+    const state = createSessionState()
+    const messages = [msg("msg-anchor"), msg("msg-1"), msg("msg-2")]
+    const inner = buildBlock("msg-anchor", "msg-compress-1", ["msg-1"], "inner")
+    const outer = {
+        ...buildBlock("msg-anchor", "msg-compress-2-missing", ["msg-1", "msg-2"], "outer"),
+        blockId: 2,
+        runId: 2,
+        createdAt: 2,
+        consumedBlockIds: [1],
+        includedBlockIds: [1],
+    }
+    // inner's origin is present, so it would be activated first in creation order.
+    messages.push(msg("msg-compress-1"))
+    state.prune.messages.blocksById.set(1, inner)
+    state.prune.messages.blocksById.set(2, outer)
+
+    syncCompressionBlocks(state, new Logger(false), messages)
+
+    assert.equal(outer.active, true)
+    assert.equal(inner.active, false)
+    assert.deepEqual([...state.prune.messages.activeBlockIds], [2])
+})
+
+test("syncCompressionBlocks reports liveness changes for write-through saves", () => {
+    const state = createSessionState()
+    const block = buildBlock("msg-anchor", "msg-compress", ["msg-1"], "summary")
+    block.active = false
+    state.prune.messages.blocksById.set(1, block)
+    const messages = [msg("msg-anchor"), msg("msg-1"), msg("msg-compress")]
+
+    assert.equal(syncCompressionBlocks(state, new Logger(false), messages), true)
+    assert.equal(syncCompressionBlocks(state, new Logger(false), messages), false)
+})

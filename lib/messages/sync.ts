@@ -12,15 +12,24 @@ function sortBlocksByCreation(
     return a.blockId - b.blockId
 }
 
+/**
+ * Recompute block liveness against the current message window.
+ *
+ * Returns true when any block's liveness changed, so callers can persist the new
+ * state immediately instead of relying on the next incidental save.
+ */
 export const syncCompressionBlocks = (
     state: SessionState,
     logger: Logger,
     messages: WithParts[],
-): void => {
+): boolean => {
     const messagesState = state.prune.messages
     if (!messagesState?.blocksById?.size) {
-        return
+        return false
     }
+    const wasActive = new Map(
+        Array.from(messagesState.blocksById.values(), (block) => [block.blockId, block.active]),
+    )
 
     const messageIds = new Set(messages.map((msg) => msg.info.id))
     const previousActiveBlockIds = new Set<number>(
@@ -37,16 +46,26 @@ export const syncCompressionBlocks = (
     const orderedBlocks = Array.from(messagesState.blocksById.values()).sort(sortBlocksByCreation)
 
     for (const block of orderedBlocks) {
+        if (block.deactivatedByUser) {
+            block.active = false
+            if (block.deactivatedAt === undefined) {
+                block.deactivatedAt = now
+            }
+            block.deactivatedByBlockId = undefined
+            continue
+        }
+
         const hasOriginMessage =
             typeof block.compressMessageId === "string" &&
             block.compressMessageId.length > 0 &&
             messageIds.has(block.compressMessageId)
 
         if (!hasOriginMessage) {
-            // compressMessageId（执行压缩的 assistant 消息）可能因被 DCP 标记为
-            // ignored/synthetic 而从未持久化，重启后会缺失。此时只要锚点消息仍在，
-            // 压缩摘要依然有效，应保留 active 使摘要继续注入 LLM 上下文；
-            // 否则每次重启压缩都会失效，上下文重新膨胀导致频繁触发压缩提醒。
+            // The compressing assistant message can be missing after a restart (it may never
+            // be persisted, or a native compaction dropped it). The summary is still valid as
+            // long as its anchor is in the window, so keep the block live and fall through to
+            // the normal path, which also retires blocks it consumed. Without the anchor the
+            // summary could not be rendered, so the block must not hide its range.
             const hasAnchorMessage =
                 typeof block.anchorMessageId === "string" &&
                 block.anchorMessageId.length > 0 &&
@@ -59,25 +78,6 @@ export const syncCompressionBlocks = (
                 missingOriginBlockIds.push(block.blockId)
                 continue
             }
-
-            block.active = true
-            block.deactivatedAt = undefined
-            block.deactivatedByBlockId = undefined
-            messagesState.activeBlockIds.add(block.blockId)
-            messagesState.activeByAnchorMessageId.set(block.anchorMessageId, block.blockId)
-            logger.warn("Compress block origin message missing; keeping active via anchor", {
-                blockId: block.blockId,
-            })
-            continue
-        }
-
-        if (block.deactivatedByUser) {
-            block.active = false
-            if (block.deactivatedAt === undefined) {
-                block.deactivatedAt = now
-            }
-            block.deactivatedByBlockId = undefined
-            continue
         }
 
         for (const consumedBlockId of block.consumedBlockIds) {
@@ -142,4 +142,8 @@ export const syncCompressionBlocks = (
             reactivatedCount,
         })
     }
+
+    return Array.from(messagesState.blocksById.values()).some(
+        (block) => wasActive.get(block.blockId) !== block.active,
+    )
 }
