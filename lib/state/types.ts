@@ -112,4 +112,12 @@ export interface SessionState {
     modelContextLimit: number | undefined
     systemPromptTokens: number | undefined
     needsReconstruction: boolean
+    /**
+     * Set when a state file exists on disk but could not be loaded (corrupt or
+     * foreign format). While set, saveSessionState refuses to write so a failed
+     * load can never overwrite the only good copy of compression blocks.
+     */
+    persistedLoadFailed?: boolean
+    /** Memo for the content-based token usage estimate in getCurrentTokenUsage. */
+    tokenUsageEstimate?: { key: string; value: number }
 }

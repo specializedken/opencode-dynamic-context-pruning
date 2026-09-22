@@ -2,7 +2,12 @@ import type { SessionState, ToolParameterEntry, WithParts } from "./types"
 import type { Logger } from "../logger"
 import { applyPendingCompressionDurations } from "../compress/timing"
 import { hasCompressHistory } from "../compress/reconstruct"
-import { loadManualModeSetting, loadSessionState, saveSessionState } from "./persistence"
+import {
+    loadManualModeSetting,
+    loadSessionState,
+    saveSessionState,
+    sessionStateFileExists,
+} from "./persistence"
 import {
     isSubAgentSession,
     findLastCompactionTimestamp,
@@ -147,6 +152,8 @@ export function resetSessionState(state: SessionState): void {
     state.modelContextLimit = undefined
     state.systemPromptTokens = undefined
     state.needsReconstruction = false
+    state.persistedLoadFailed = undefined
+    state.tokenUsageEstimate = undefined
 }
 
 // Replaced whenever a state is reset, so a slower initialisation can tell that it lost ownership.
@@ -202,6 +209,16 @@ export async function ensureSessionInitialized(
     state.nudges.turnNudgeAnchors = collectTurnNudgeAnchors(messages)
 
     if (persisted === null) {
+        if (sessionStateFileExists(sessionId)) {
+            // The file is there but unreadable (corrupt JSON or a foreign
+            // format). Mark the state so saveSessionState refuses to write —
+            // otherwise the next write-through would destroy the surviving
+            // compression blocks with a fresh near-empty file.
+            state.persistedLoadFailed = true
+            logger.warn("State file exists but could not be loaded; writes are blocked", {
+                sessionId,
+            })
+        }
         if (hasCompressHistory(messages)) {
             state.needsReconstruction = true
             logger.info("New session with compression history detected — reconstruction needed")

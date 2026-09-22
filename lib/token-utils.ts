@@ -8,6 +8,7 @@ export async function getCurrentTokenUsage(
     state: SessionState,
     messages: WithParts[],
 ): Promise<number> {
+    let foundTokens = false
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i]
         if (msg.info.role !== "assistant") {
@@ -18,6 +19,8 @@ export async function getCurrentTokenUsage(
         if ((assistantInfo.tokens?.output || 0) <= 0) {
             continue
         }
+        foundTokens = true
+        foundTokens = true
 
         if (
             state.lastCompaction > 0 &&
@@ -36,13 +39,29 @@ export async function getCurrentTokenUsage(
         return Math.max(reportedUsage, await estimateCurrentMessageTokenUsage(state, messages))
     }
 
-    return 0
+    if (foundTokens) {
+        return 0
+    }
+
+    // No assistant message carries token accounting (some v2 storage shapes
+    // omit `tokens`). Without a number the nudge thresholds never trip and
+    // DCP never asks the model to compress. Fall back to a content-based
+    // estimate; it is a lower bound, which is the safe direction for nudging.
+    return estimateCurrentMessageTokenUsage(state, messages)
 }
 
 async function estimateCurrentMessageTokenUsage(
     state: SessionState,
     messages: WithParts[],
 ): Promise<number> {
+    // Counting the whole window is the expensive part of a request, so reuse the
+    // result while the window is unchanged.
+    const lastMessage = messages[messages.length - 1]
+    const key = `${messages.length}:${lastMessage?.info.id ?? ""}:${lastMessage?.parts?.length ?? 0}:${state.lastCompaction}`
+    if (state.tokenUsageEstimate?.key === key) {
+        return state.tokenUsageEstimate.value
+    }
+
     let total = 0
 
     for (const msg of messages) {
@@ -57,6 +76,7 @@ async function estimateCurrentMessageTokenUsage(
         total += await countAllMessageTokens(msg)
     }
 
+    state.tokenUsageEstimate = { key, value: total }
     return total
 }
 

@@ -13,9 +13,9 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { parseColor } from "@opentui/core"
 import { testRender } from "@opentui/solid"
-import { ContextDialog, PanelDialog, StatsDialog, StatusDialog } from "../lib/tui/dialogs"
-import type { ViewApi } from "../lib/tui/types"
-import { resolveViewTheme } from "../lib/v2/theme"
+import { ContextDialog, PanelDialog, StatsDialog, StatusDialog } from "../../lib/tui/dialogs"
+import type { ViewApi } from "../../lib/tui/types"
+import { resolveViewTheme } from "../../lib/v2/theme"
 
 const breakdown = {
     total: 1000,
