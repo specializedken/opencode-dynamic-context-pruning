@@ -33,10 +33,33 @@ import { analyzeContextTokens } from "../commands/context"
 import { buildStatsReport } from "../commands/stats"
 import { rpc } from "./rpc"
 
-// Extension point for future model-invisible V2 reports. Never use synthetic()
-// here: its text would enter the model's context, unlike V1 ignored messages.
+// V2 reports become ephemeral rpc events that the TUI plugin renders as
+// toasts. Never use synthetic() here: its text would enter the model's
+// context, unlike V1 ignored messages. Without a registered emitter (host
+// without rpc events, or plugin disabled) reports degrade to the log.
+let emitNotify:
+    | ((event: {
+          title: string
+          message: string
+          variant?: "info" | "success" | "warning" | "error"
+          duration?: number
+      }) => Promise<void>)
+    | undefined
+
+const REPORT_TOAST_MAX_CHARS = 2000
+
 export async function report(logger: Logger, text: string, sessionID?: string) {
-    logger.debug("V2 report (display pending)", { sessionID, text })
+    logger.debug("V2 report", { sessionID, text })
+    if (!emitNotify || !text) return
+    const message =
+        text.length > REPORT_TOAST_MAX_CHARS
+            ? `${text.slice(0, REPORT_TOAST_MAX_CHARS)}\n... (truncated, ${text.length} chars total)`
+            : text
+    try {
+        await emitNotify({ title: "DCP", message })
+    } catch (cause) {
+        logger.debug("V2 report emit failed", { error: String(cause) })
+    }
 }
 
 /** The host's `event.tools` expects a JSON Schema, not a zod schema. */
@@ -427,35 +450,39 @@ export async function setup(ctx: Plugin.Context) {
                     },
                 })
         })
-    await ctx.rpc.register(rpc, {
-        status: async () => ({ enabled: config.commands.enabled }),
-        snapshot: ({ sessionID }) =>
-            serial(sessionID, async () => {
-                const { state, messages } = await load(sessionID)
-                syncCompressionBlocks(state, logger, messages)
-                return {
-                    manualMode: !!state.manualMode,
-                    canCompress:
-                        state.compressPermission === "allow" &&
-                        (!state.isSubAgent || config.experimental.allowSubAgents),
-                    ...(state.compressPermission === "ask"
-                        ? {
-                              blockedReason:
-                                  "Permission 'ask' is not supported by the V2 plugin API yet.",
-                          }
-                        : {}),
-                    context: await analyzeContextTokens(state, messages),
-                    stats: await buildStatsReport(state, logger),
-                }
-            }),
-        manual: ({ sessionID, enabled }) =>
-            serial(sessionID, async () => {
-                const { state } = await load(sessionID)
-                state.manualMode = enabled ? "active" : false
-                await saveSessionState(state, logger)
-                return {}
-            }),
-    })
+    await ctx.rpc
+        .register(rpc, {
+            status: async () => ({ enabled: config.commands.enabled }),
+            snapshot: ({ sessionID }) =>
+                serial(sessionID, async () => {
+                    const { state, messages } = await load(sessionID)
+                    syncCompressionBlocks(state, logger, messages)
+                    return {
+                        manualMode: !!state.manualMode,
+                        canCompress:
+                            state.compressPermission === "allow" &&
+                            (!state.isSubAgent || config.experimental.allowSubAgents),
+                        ...(state.compressPermission === "ask"
+                            ? {
+                                  blockedReason:
+                                      "Permission 'ask' is not supported by the V2 plugin API yet.",
+                              }
+                            : {}),
+                        context: await analyzeContextTokens(state, messages),
+                        stats: await buildStatsReport(state, logger),
+                    }
+                }),
+            manual: ({ sessionID, enabled }) =>
+                serial(sessionID, async () => {
+                    const { state } = await load(sessionID)
+                    state.manualMode = enabled ? "active" : false
+                    await saveSessionState(state, logger)
+                    return {}
+                }),
+        })
+        .then((registration) => {
+            emitNotify = (event) => registration.events.emit("notify", event)
+        })
     logger.info("DCP V2 initialized")
     return () => {
         sessions.clear()

@@ -51,24 +51,30 @@ export function buildCompressedBlockGuidance(state: SessionState): string {
         .sort((a, b) => b.tokens - a.tokens)
     const totalTokens = sized.reduce((total, block) => total + block.tokens, 0)
 
-    lines.push("- Block summaries are part of your context and consume real tokens. Current cost:")
-    for (const block of sized) {
+    lines.push("- Block summaries are part of your context and consume real tokens. Largest:")
+    const MAX_LISTED_BLOCKS = 8
+    const listed = sized.slice(0, MAX_LISTED_BLOCKS)
+    for (const block of listed) {
         lines.push(
             `  - ${formatBlockRef(block.id, state.idFormat)}: ${formatTokenEstimate(block.tokens)} tokens`,
         )
     }
+    const hiddenBlocks = sized.length - listed.length
+    if (hiddenBlocks > 0) {
+        lines.push(`  - ... +${hiddenBlocks} smaller`)
+    }
     lines.push(`- Total held by block summaries: ${formatTokenEstimate(totalTokens)} tokens.`)
     lines.push(
-        "- Decision order: (1) DROP content that is no longer needed - a compress range over it removes raw text and tool outputs from context entirely, which is always the biggest win.",
+        "- Decision order: (1) DROP ranges no longer needed - a compress range removes their raw text and tool outputs from context entirely, the biggest win. (2) MERGE only content needed for as long as this session lives: compress a range covering those blocks (e.g. " +
+            formatBlockRef(1, state.idFormat) +
+            ".." +
+            formatBlockRef(8, state.idFormat) +
+            ") and reference each included block exactly once as `" +
+            placeholder +
+            "` in the new summary. (3) Leave anything uncertain alone.",
     )
     lines.push(
-        `(2) MERGE only content that will absolutely be necessary for as long as this session lives: compress a range whose boundaries include those blocks (e.g. ${formatBlockRef(1, state.idFormat)}..${formatBlockRef(8, state.idFormat)}) and reference each included block exactly once as \`${placeholder}\` in the new summary.`,
-    )
-    lines.push(
-        "(3) If unsure whether content is still needed, leave it alone - do not drop or merge it.",
-    )
-    lines.push(
-        "- Merge caveat: re-summarization is lossy and a merge fuses constituents - after merging, individual blocks can no longer be re-compressed or decompressed separately. Only merge content that must persist to the end of the session; keep blocks standalone whenever they might need individual decompression later.",
+        "- Merge caveat: merges are lossy and fuse blocks; merged blocks can no longer be re-compressed or decompressed separately. Keep blocks standalone unless they must persist to the end of the session.",
     )
     lines.push(
         `- If your selected compression range includes any listed block, include each required placeholder exactly once in the summary using \`${placeholder}\`.`,
@@ -104,7 +110,7 @@ export function appendGuidanceToDcpTag(nudgeText: string, guidance: string): str
 }
 
 const SYNTHETIC_SUMMARY_PREFIX = "msg_dcp_summary"
-const MAX_REPORTED_MESSAGES = 15
+const MAX_REPORTED_MESSAGES = 8
 
 function estimateMessageTokens(
     state: SessionState,

@@ -668,7 +668,7 @@ const defaultConfig: PluginConfig = {
     autoUpdate: true,
     debug: false,
     pruneNotification: "detailed",
-    pruneNotificationType: "chat",
+    pruneNotificationType: "toast",
     commands: {
         enabled: true,
         protectedTools: [...DEFAULT_PROTECTED_TOOLS],
