@@ -126,11 +126,10 @@ test("V2 request view drops DCP chat notifications but keeps look-alike assistan
     ]
     const restored = project(native, entries(native), session).restore()
     // Manual-trigger prompts reach the model; only stamped DCP notes are dropped.
-    assert.deepEqual(restored.map((message) => message.id), [
-        "msg_user",
-        "msg_trigger",
-        "msg_assistant",
-    ])
+    assert.deepEqual(
+        restored.map((message) => message.id),
+        ["msg_user", "msg_trigger", "msg_assistant"],
+    )
 })
 
 test("V2 history view skips DCP chat notifications entirely", async () => {
