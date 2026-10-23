@@ -478,6 +478,29 @@ test("range-mode nudges append to existing text parts before tool outputs", asyn
     const config = buildConfig("range")
 
     assignMessageRefs(state, messages)
+    state.prune.messages.blocksById.set(7, {
+        blockId: 7,
+        runId: 1,
+        active: true,
+        deactivatedByUser: false,
+        compressedTokens: 0,
+        summaryTokens: 0,
+        mode: "range",
+        topic: "Earlier notes",
+        startId: "m0001",
+        endId: "m0001",
+        anchorMessageId: "msg-assistant-1",
+        compressMessageId: "msg-origin",
+        includedBlockIds: [],
+        consumedBlockIds: [],
+        parentBlockIds: [],
+        directMessageIds: ["msg-assistant-1"],
+        directToolIds: [],
+        effectiveMessageIds: ["msg-assistant-1"],
+        effectiveToolIds: [],
+        createdAt: 1,
+        summary: "Earlier summary",
+    })
     state.prune.messages.activeBlockIds.add(7)
     state.nudges.contextLimitAnchors.add("msg-assistant-1")
 
@@ -944,4 +967,64 @@ test("injectMessageIds skips assistant with empty text part (issue #463)", async
         "",
         "empty text part should remain untouched",
     )
+})
+
+test("range-mode anchored nudges stay byte-stable as the session grows and carry no occupancy list", async () => {
+    // The per-message occupancy list changes every turn, so it belongs only in the one-shot
+    // manual trigger prompt. Anchored nudges are replayed on every request; if their text
+    // changed with message sizes the cached prompt prefix would be invalidated each turn.
+    const sessionID = "ses_range_nudge_stability"
+    const prompts = {
+        system: "",
+        compressRange: "",
+        compressMessage: "",
+        contextLimitNudge: "<dcp-system-reminder>Base context nudge</dcp-system-reminder>",
+        turnNudge: "<dcp-system-reminder>Base turn nudge</dcp-system-reminder>",
+        iterationNudge: "<dcp-system-reminder>Base iteration nudge</dcp-system-reminder>",
+    }
+    const base = (): WithParts[] => [
+        buildMessage("msg-user-1", "user", sessionID, repeatedWord("alpha", 3000), 1),
+        {
+            info: {
+                id: "msg-assistant-1",
+                role: "assistant",
+                sessionID,
+                agent: "assistant",
+                time: { created: 2 },
+            } as WithParts["info"],
+            parts: [
+                textPart("msg-assistant-1", sessionID, "msg-assistant-1-part", "Working summary."),
+                toolPart("msg-assistant-1", sessionID, "call-1", "read", "x".repeat(40000)),
+            ],
+        },
+    ]
+    const render = (messages: WithParts[]): string => {
+        const state = createSessionState()
+        const config = buildConfig("range")
+        assignMessageRefs(state, messages)
+        state.nudges.contextLimitAnchors.add("msg-assistant-1")
+        applyAnchoredNudges(state, config, messages, prompts)
+        return JSON.stringify(messages[1]?.parts[0])
+    }
+
+    const first = render(base())
+    const grown = base()
+    grown.push(buildMessage("msg-user-2", "user", sessionID, repeatedWord("beta", 9000), 3), {
+        info: {
+            id: "msg-assistant-2",
+            role: "assistant",
+            sessionID,
+            agent: "assistant",
+            time: { created: 4 },
+        } as WithParts["info"],
+        parts: [
+            textPart("msg-assistant-2", sessionID, "msg-assistant-2-part", "More work."),
+            toolPart("msg-assistant-2", sessionID, "call-2", "read", "y".repeat(90000)),
+        ],
+    })
+    const second = render(grown)
+
+    assert.match(first, /Base context nudge/)
+    assert.doesNotMatch(first, /Largest uncompressed messages/)
+    assert.equal(second, first)
 })
