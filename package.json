@@ -32,7 +32,7 @@
         "dev": "opencode plugin dev",
         "sandbox": "node scripts/sandbox.mjs",
         "typecheck": "tsc --noEmit && npm run typecheck --workspace=tests/logger",
-        "test": "node --import tsx --test tests/*.test.ts && npm test --workspace=tests/logger",
+        "test": "node --import ./tests/setup-env.mjs --import tsx --test tests/*.test.ts && npm test --workspace=tests/logger",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "dcp": "tsx scripts/print.ts"
