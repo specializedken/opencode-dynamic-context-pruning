@@ -259,3 +259,88 @@ test("manual trigger prompt carries the merge caveat", () => {
     assert.match(prompt, /Merge caveat/)
     assert.match(prompt, /individual decompression later/)
 })
+
+function toolMessage(id: string, callID: string, tool: string, output: string) {
+    return {
+        info: { id, sessionID: "s", role: "assistant", time: { created: 1 } },
+        parts: [
+            {
+                id: `${id}-p`,
+                sessionID: "s",
+                messageID: id,
+                type: "tool",
+                callID,
+                tool,
+                state: { status: "completed", input: {}, output },
+            },
+        ],
+    }
+}
+
+test("message occupancy guidance ignores outputs DCP already pruned or would keep", () => {
+    const state = createSessionState()
+    const config = {
+        compress: { mode: "range", protectedTools: ["task"] },
+        protectedFilePatterns: [],
+    } as unknown as PluginConfig
+    const pruned = toolMessage("msg-pruned", "call-pruned", "read", "x".repeat(40000))
+    const protectedTask = toolMessage("msg-task", "call-task", "task", "y".repeat(40000))
+    const live = toolMessage("msg-live", "call-live", "read", "z".repeat(8000))
+    state.prune.tools.set("call-pruned", 10000)
+    state.messageIds.byRawId.set("msg-pruned", "m0001")
+    state.messageIds.byRawId.set("msg-task", "m0002")
+    state.messageIds.byRawId.set("msg-live", "m0003")
+
+    const guidance = buildMessageOccupancyGuidance(state, config, [pruned, protectedTask, live])
+
+    // Pruned and protected outputs only cost their (empty) input, so they are not counted
+    // as tool outputs and rank below the live read.
+    assert.match(guidance, /- m0003 \(assistant, ~2\.0k tokens, 1 tool output\)/)
+    assert.match(guidance, /- m0001 \(assistant, ~1 tokens\)/)
+    assert.match(guidance, /- m0002 \(assistant, ~1 tokens\)/)
+    assert.ok(guidance.indexOf("m0003") < guidance.indexOf("m0001"))
+})
+
+test("manual trigger does not give V2 native compaction entries a message ref", async () => {
+    const state = createSessionState()
+    const config = { compress: { mode: "range" } } as PluginConfig
+    const compaction = {
+        info: {
+            id: "cmp-1",
+            sessionID: "s",
+            role: "assistant",
+            summary: true,
+            time: { created: 1 },
+        },
+        parts: [],
+    }
+    const after = {
+        info: { id: "msg-after", sessionID: "s", role: "user", time: { created: 2 } },
+        parts: [{ id: "p1", sessionID: "s", messageID: "msg-after", type: "text", text: "hi" }],
+    }
+
+    await handleManualTriggerCommand(
+        {
+            client: null,
+            state,
+            config,
+            logger: null as any,
+            sessionId: "s",
+            messages: [compaction, after],
+        } as any,
+        "compress",
+    )
+
+    assert.equal(state.messageIds.byRawId.has("cmp-1"), false)
+    assert.equal(state.messageIds.byRawId.get("msg-after"), "m0001")
+})
+
+test("merge caveat does not claim compressed blocks can be dropped", () => {
+    const state = createSessionState()
+    seedBlocks(state, [[1, 5000]])
+
+    const guidance = buildCompressedBlockGuidance(state)
+
+    assert.match(guidance, /can no longer be re-compressed or decompressed separately/)
+    assert.doesNotMatch(guidance, /droppable|be dropped/)
+})

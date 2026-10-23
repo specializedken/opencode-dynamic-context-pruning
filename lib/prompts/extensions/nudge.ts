@@ -3,6 +3,7 @@ import type { PluginConfig } from "../../config"
 import { isMessageCompacted } from "../../state/utils"
 import { isIgnoredUserMessage, isProtectedUserMessage } from "../../messages/query"
 import { formatBlockRef } from "../../message-ids"
+import { isToolProtected } from "../../protected-patterns"
 
 function formatTokenEstimate(tokens: number): string {
     if (tokens >= 1000) {
@@ -67,7 +68,7 @@ export function buildCompressedBlockGuidance(state: SessionState): string {
         "(3) If unsure whether content is still needed, leave it alone - do not drop or merge it.",
     )
     lines.push(
-        "- Merge caveat: re-summarization is lossy and a merge fuses constituents - after merging, individual blocks can no longer be dropped or re-compressed separately. Only merge content that must persist to the end of the session; keep blocks standalone whenever they might be droppable or need individual decompression later.",
+        "- Merge caveat: re-summarization is lossy and a merge fuses constituents - after merging, individual blocks can no longer be re-compressed or decompressed separately. Only merge content that must persist to the end of the session; keep blocks standalone whenever they might need individual decompression later.",
     )
     lines.push(
         `- If your selected compression range includes any listed block, include each required placeholder exactly once in the summary using \`${placeholder}\`.`,
@@ -105,7 +106,11 @@ export function appendGuidanceToDcpTag(nudgeText: string, guidance: string): str
 const SYNTHETIC_SUMMARY_PREFIX = "msg_dcp_summary"
 const MAX_REPORTED_MESSAGES = 15
 
-function estimateMessageTokens(message: WithParts): { tokens: number; toolOutputs: number } {
+function estimateMessageTokens(
+    state: SessionState,
+    config: PluginConfig,
+    message: WithParts,
+): { tokens: number; toolOutputs: number } {
     let chars = 0
     let toolOutputs = 0
     for (const part of message.parts ?? []) {
@@ -114,13 +119,34 @@ function estimateMessageTokens(message: WithParts): { tokens: number; toolOutput
             continue
         }
         if (part.type === "tool") {
-            toolOutputs += 1
-            chars += JSON.stringify(part.state ?? {}).length
+            const toolState = part.state as { input?: unknown; output?: unknown } | undefined
+            chars += JSON.stringify(toolState?.input ?? {}).length
+            // Only outputs that compression would actually remove count: outputs DCP already
+            // pruned are replaced by a short placeholder, and protected tool outputs are
+            // appended to the summary anyway.
+            const pruned =
+                state.prune.tools.has(part.callID) &&
+                part.tool !== "question" &&
+                part.tool !== "edit" &&
+                part.tool !== "write"
+            const protectedTool = isToolProtected(
+                part.tool,
+                toolState?.input,
+                config.compress?.protectedTools ?? [],
+                config.protectedFilePatterns ?? [],
+                part.state && "metadata" in part.state
+                    ? (part.state.metadata as Record<string, unknown>)
+                    : undefined,
+            )
+            if (!pruned && !protectedTool && typeof toolState?.output === "string") {
+                toolOutputs += 1
+                chars += toolState.output.length
+            }
             continue
         }
         if (part.type === "file") {
-            // Projected media (v2) carries its payload/base64 in `url`; the
-            // model sees it, so it must count toward the drop-candidate cost.
+            // V1 file parts carry their payload in `url`. V2's command-time history() view does
+            // not include media payloads, so V2 media is not counted here.
             chars += (part.url ?? "").length
         }
     }
@@ -152,7 +178,7 @@ export function buildMessageOccupancyGuidance(
         if (isMessageCompacted(state, message)) continue
         const ref = state.messageIds.byRawId.get(message.info.id)
         if (!ref) continue
-        const { tokens, toolOutputs } = estimateMessageTokens(message)
+        const { tokens, toolOutputs } = estimateMessageTokens(state, config, message)
         if (tokens <= 0) continue
         sized.push({
             ref,

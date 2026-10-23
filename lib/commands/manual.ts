@@ -106,8 +106,17 @@ export async function handleManualTriggerCommand(
     // request-time hooks; at command time (e.g. /dcp-compress as the first
     // action in a fresh process) they are still empty, which silently dropped
     // the whole occupancy section. Assigning here is idempotent and the refs
-    // stay stable for the following request.
-    assignMessageRefs(ctx.state, ctx.messages ?? [])
+    // stay stable for the following request. V2's history() view includes native
+    // compaction entries as part-less summary messages that are never projected
+    // to the model; giving them a ref here would shift every later @N@ ID and
+    // invalidate the provider's cached prefix. (V1 summaries carry text and are
+    // model-visible, so they keep their ref.)
+    assignMessageRefs(
+        ctx.state,
+        (ctx.messages ?? []).filter(
+            (message) => !(message.info.summary === true && (message.parts?.length ?? 0) === 0),
+        ),
+    )
     return getTriggerPrompt(tool, ctx.state, ctx.config, userFocus, ctx.messages)
 }
 
