@@ -145,9 +145,7 @@ test("prune injects compressed summary into LLM context after sync keeps block a
     // 摘要必须实际注入（LLM 能读到被压缩的内容）
     const joined = messages
         .map((m) =>
-            (m.parts ?? [])
-                .map((p: any) => (typeof p.text === "string" ? p.text : ""))
-                .join(" "),
+            (m.parts ?? []).map((p: any) => (typeof p.text === "string" ? p.text : "")).join(" "),
         )
         .join("\n")
     assert.ok(
@@ -167,4 +165,3 @@ test("prune injects compressed summary into LLM context after sync keeps block a
     // 锚点消息保留
     assert.ok(messages.some((m) => m.info.id === anchorMsgId))
 })
-

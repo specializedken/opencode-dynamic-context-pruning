@@ -132,13 +132,13 @@ export function createChatMessageTransformHandler(
         }
 
         stripHallucinations(output.messages)
-        cacheSystemPromptTokens(state, output.messages)
+        await cacheSystemPromptTokens(state, output.messages)
 
         if (state.needsReconstruction) {
             // Reconstruction resolves boundary refs, so they must exist before prune
             // (the regular assignment runs after prune to avoid orphan aliases).
             assignMessageRefs(state, output.messages)
-            const reconstructed = reconstructFromHistory(state, logger, output.messages)
+            const reconstructed = await reconstructFromHistory(state, logger, output.messages)
             state.needsReconstruction = false
             if (reconstructed > 0) {
                 logger.info("Compression state reconstructed from conversation history", {
@@ -149,7 +149,7 @@ export function createChatMessageTransformHandler(
         }
 
         syncCompressionBlocks(state, logger, output.messages)
-        syncToolCache(state, config, logger, output.messages)
+        await syncToolCache(state, config, logger, output.messages)
         buildToolIdList(state, output.messages)
         prune(state, logger, config, output.messages)
         assignMessageRefs(state, output.messages)
@@ -160,9 +160,9 @@ export function createChatMessageTransformHandler(
             output.messages,
             config.experimental.allowSubAgents,
         )
-        const compressionPriorities = buildPriorityMap(config, state, output.messages)
+        const compressionPriorities = await buildPriorityMap(config, state, output.messages)
         prompts.reload()
-        injectCompressNudges(
+        await injectCompressNudges(
             state,
             config,
             logger,

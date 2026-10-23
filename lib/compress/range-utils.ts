@@ -62,12 +62,14 @@ export function validateArgs(args: CompressRangeToolArgs): void {
     }
 }
 
-export function resolveRanges(
+export async function resolveRanges(
     args: CompressRangeToolArgs,
     searchContext: SearchContext,
     state: SessionState,
-): ResolvedRangeCompression[] {
-    return args.content.map((entry, index) => {
+): Promise<ResolvedRangeCompression[]> {
+    // Sequential: preserves entry order and validation order, one count at a time.
+    const plans: ResolvedRangeCompression[] = []
+    for (const [index, entry] of args.content.entries()) {
         const normalizedEntry = {
             startId: entry.startId.trim(),
             endId: entry.endId.trim(),
@@ -80,15 +82,16 @@ export function resolveRanges(
             normalizedEntry.startId,
             normalizedEntry.endId,
         )
-        const selection = resolveSelection(searchContext, startReference, endReference)
+        const selection = await resolveSelection(searchContext, startReference, endReference)
 
-        return {
+        plans.push({
             index,
             entry: normalizedEntry,
             selection,
             anchorMessageId: resolveAnchorMessageId(startReference),
-        }
-    })
+        })
+    }
+    return plans
 }
 
 export function validateNonOverlapping(plans: ResolvedRangeCompression[]): void {

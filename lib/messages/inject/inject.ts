@@ -30,7 +30,7 @@ import {
     isContextOverLimits,
 } from "./utils"
 
-export const injectCompressNudges = (
+export const injectCompressNudges = async (
     state: SessionState,
     config: PluginConfig,
     logger: Logger,
@@ -38,7 +38,7 @@ export const injectCompressNudges = (
     prompts: RuntimePrompts,
     compressionPriorities?: CompressionPriorityMap,
     createAnchors = true,
-): void => {
+): Promise<void> => {
     if (compressPermission(state, config) === "deny") {
         return
     }
@@ -66,7 +66,7 @@ export const injectCompressNudges = (
     const { providerId, modelId } = getModelInfo(messages)
     let anchorsChanged = false
 
-    const { overMaxLimit, overMinLimit } = isContextOverLimits(
+    const { overMaxLimit, overMinLimit } = await isContextOverLimits(
         config,
         state,
         providerId,

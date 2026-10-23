@@ -66,8 +66,8 @@ const tools = (messages: WithParts[]) =>
     messages.flatMap((m) => m.parts.filter((p) => p.type === "tool"))
 const outputs = (messages: WithParts[]) =>
     tools(messages).map((p) => (p.state.status === "completed" ? p.state.output : undefined))
-function run(messages: WithParts[], state = createSessionState(), settings = config) {
-    syncToolCache(state, settings, logger, messages)
+async function run(messages: WithParts[], state = createSessionState(), settings = config) {
+    await syncToolCache(state, settings, logger, messages)
     buildToolIdList(state, messages)
     deduplicate(state, logger, settings, messages)
     purgeErrors(state, logger, settings, messages)
@@ -77,68 +77,68 @@ function run(messages: WithParts[], state = createSessionState(), settings = con
 
 // #615: a reused provider ID cannot safely address one tool occurrence.
 for (const sameInput of [false, true]) {
-    test(`reused IDs retain both results with ${sameInput ? "identical" : "different"} inputs`, () => {
+    test(`reused IDs retain both results with ${sameInput ? "identical" : "different"} inputs`, async () => {
         const messages = [
             toolMessage("old", "read:0", "alpha"),
             toolMessage("new", "read:0", sameInput ? "alpha" : "beta"),
         ]
         const expected = outputs(messages)
-        const state = run(messages)
+        const state = await run(messages)
         assert.deepEqual(outputs(messages), expected)
         assert.equal(state.prune.tools.size, 0)
         assert.equal(state.stats.totalPruneTokens, 0)
     })
 }
 
-test("two parts in one message with the same ID are retained", () => {
+test("two parts in one message with the same ID are retained", async () => {
     const message = toolMessage("old", "read:0", "alpha")
     message.parts.push(
         ...toolMessage("new", "read:0", "beta").parts.filter((p) => p.type === "tool"),
     )
     const expected = outputs([message])
-    run([message])
+    await run([message])
     assert.deepEqual(outputs([message]), expected)
 })
 
-test("unique IDs still remove only the older repeated read", () => {
+test("unique IDs still remove only the older repeated read", async () => {
     const messages = [toolMessage("old", "first", "alpha"), toolMessage("new", "second", "alpha")]
-    const state = run(messages)
+    const state = await run(messages)
     assert.deepEqual([...state.prune.tools.keys()], ["first"])
     assert.match(String(outputs(messages)[0]), /Output removed/)
     assert.equal(outputs(messages)[1], "contents:alpha")
 })
 
-test("unique IDs with different inputs remain independent", () => {
+test("unique IDs with different inputs remain independent", async () => {
     const messages = [toolMessage("old", "first"), toolMessage("new", "second")]
     const expected = outputs(messages)
-    run(messages)
+    await run(messages)
     assert.deepEqual(outputs(messages), expected)
 })
 
-test("a collision introduced after caching clears the old metadata and prune entry", () => {
+test("a collision introduced after caching clears the old metadata and prune entry", async () => {
     const state = createSessionState()
     const old = toolMessage("old", "read:0")
     syncToolCache(state, config, logger, [old])
     state.prune.tools.set("read:0", 100)
     const messages = [old, toolMessage("new", "read:0")]
     const expected = outputs(messages)
-    run(messages, state)
+    await run(messages, state)
     assert.deepEqual(outputs(messages), expected)
     assert.equal(state.toolParameters.has("read:0"), false)
     assert.equal(state.prune.tools.has("read:0"), false)
 })
 
-test("compacted occurrences still make a retained call ID ambiguous", () => {
+test("compacted occurrences still make a retained call ID ambiguous", async () => {
     const state = createSessionState()
     state.lastCompaction = 2
     const messages = [toolMessage("old", "read:0"), toolMessage("new", "read:0")]
     messages[0]!.info.time.created = 1
     state.prune.tools.set("read:0", 100)
-    run(messages, state)
+    await run(messages, state)
     assert.equal(outputs(messages)[1], "contents:new")
 })
 
-test("errored calls with reused IDs retain their separate inputs", () => {
+test("errored calls with reused IDs retain their separate inputs", async () => {
     const state = createSessionState()
     state.currentTurn = 10
     const messages = [toolMessage("old", "read:0"), toolMessage("new", "read:0")]
@@ -151,7 +151,7 @@ test("errored calls with reused IDs retain their separate inputs", () => {
         }
     }
     const expected = structuredClone(messages)
-    run(messages, state)
+    await run(messages, state)
     assert.deepEqual(messages, expected)
 })
 
@@ -257,7 +257,7 @@ test("protected summaries keep both subagents' actual results", async () => {
     const messages = taskMessages()
     const state = createSessionState()
     const context = buildSearchContext(state, messages)
-    const selection = resolveSelection(
+    const selection = await resolveSelection(
         context,
         { kind: "message", rawIndex: 0, messageId: "old" },
         { kind: "message", rawIndex: 1, messageId: "new" },
@@ -275,7 +275,7 @@ test("protected summaries keep both subagents' actual results", async () => {
     assert.match(summary, /result:child_1/)
 })
 
-test("V2 projection pairs each reused ID with the following turn's result", () => {
+test("V2 projection pairs each reused ID with the following turn's result", async () => {
     const native = [
         {
             id: "old",
@@ -323,7 +323,7 @@ test("V2 projection pairs each reused ID with the following turn's result", () =
         agent: "build",
     } as any)
     assert.deepEqual(outputs(view.messages), ["alpha", "beta"])
-    run(view.messages)
+    await run(view.messages)
     assert.deepEqual(view.restore(), native)
     // Compressing the old message must remove only its paired result.
     const state = createSessionState()

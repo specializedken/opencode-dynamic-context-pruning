@@ -6,7 +6,7 @@ import { injectCompressNudges } from "../lib/messages/inject/inject"
 import type { RuntimePrompts } from "../lib/prompts/store"
 import { createSessionState, type WithParts } from "../lib/state"
 
-test("compaction replays existing nudges without changing the cached prefix or adding anchors", () => {
+test("compaction replays existing nudges without changing the cached prefix or adding anchors", async () => {
     const state = createSessionState("compact")
     const logger = new Logger(false)
     const config = {
@@ -46,14 +46,14 @@ test("compaction replays existing nudges without changing the cached prefix or a
         },
     ] as WithParts[]
     const primary = structuredClone(raw)
-    injectCompressNudges(state, config, logger, primary, prompts)
+    await injectCompressNudges(state, config, logger, primary, prompts)
     assert.match(JSON.stringify(primary), /NUDGE_KEEP/)
     const anchors = structuredClone(state.nudges)
     const compact = structuredClone([
         ...raw,
         { ...user, info: { ...user.info, id: "msg_later" } },
     ]) as WithParts[]
-    injectCompressNudges(state, config, logger, compact, prompts, undefined, false)
+    await injectCompressNudges(state, config, logger, compact, prompts, undefined, false)
     assert.deepEqual(compact.slice(0, raw.length), primary)
     assert.deepEqual(state.nudges, anchors)
     assert.doesNotMatch(JSON.stringify(compact.at(-1)), /NUDGE_KEEP/)

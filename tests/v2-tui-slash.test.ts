@@ -51,7 +51,10 @@ test("OpenCode v2 TUI setup registers /dcp-compress in the slash palette", async
 
     const compress = commands.find((command) => command.slash?.name === "dcp-compress")
     assert.ok(compress, "expected /dcp-compress slash command")
-    assert.equal(commands.some((command) => command.slash?.name === "dcp"), true)
+    assert.equal(
+        commands.some((command) => command.slash?.name === "dcp"),
+        true,
+    )
 
     await compress.run("preserve the migration notes")
     assert.deepEqual(dispatched, [

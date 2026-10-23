@@ -93,7 +93,12 @@ function buildForkedSessionMessages(sessionID: string): WithParts[] {
                 time: { created: 400 },
             } as WithParts["info"],
             parts: [
-                textPart("fork-msg-assistant-2", sessionID, "p4", "The system has three components"),
+                textPart(
+                    "fork-msg-assistant-2",
+                    sessionID,
+                    "p4",
+                    "The system has three components",
+                ),
                 compressToolPart(
                     "fork-msg-assistant-2",
                     sessionID,
@@ -157,7 +162,7 @@ test("hasCompressHistory returns false when no compress tool calls exist", () =>
     assert.equal(hasCompressHistory(messages), false)
 })
 
-test("reconstructFromHistory rebuilds compression state from compress tool results", () => {
+test("reconstructFromHistory rebuilds compression state from compress tool results", async () => {
     const sessionID = "ses_fork_reconstruct_1"
     const messages = buildForkedSessionMessages(sessionID)
     const state = createSessionState()
@@ -169,7 +174,7 @@ test("reconstructFromHistory rebuilds compression state from compress tool resul
     assert.equal(state.messageIds.byRef.get("m0001"), "fork-msg-user-1")
     assert.equal(state.messageIds.byRef.get("m0002"), "fork-msg-assistant-1")
 
-    const reconstructed = reconstructFromHistory(state, logger, messages)
+    const reconstructed = await reconstructFromHistory(state, logger, messages)
 
     assert.equal(reconstructed, 1)
     assert.equal(state.prune.messages.blocksById.size, 1)
@@ -193,7 +198,7 @@ test("reconstructFromHistory rebuilds compression state from compress tool resul
     assert.ok(entry2.activeBlockIds.includes(1))
 })
 
-test("reconstructFromHistory handles multiple sequential compressions", () => {
+test("reconstructFromHistory handles multiple sequential compressions", async () => {
     const sessionID = "ses_fork_reconstruct_2"
     const messages: WithParts[] = [
         {
@@ -295,7 +300,7 @@ test("reconstructFromHistory handles multiple sequential compressions", () => {
     const logger = new Logger(false)
 
     assignMessageRefs(state, messages)
-    const reconstructed = reconstructFromHistory(state, logger, messages)
+    const reconstructed = await reconstructFromHistory(state, logger, messages)
 
     assert.equal(reconstructed, 2)
     assert.equal(state.prune.messages.blocksById.size, 2)
@@ -311,7 +316,7 @@ test("reconstructFromHistory handles multiple sequential compressions", () => {
     assert.equal(block2.compressMessageId, "msg-a3")
 })
 
-test("reconstructFromHistory handles block refs (bN) in ranges by consuming earlier blocks", () => {
+test("reconstructFromHistory handles block refs (bN) in ranges by consuming earlier blocks", async () => {
     const sessionID = "ses_fork_reconstruct_3"
     const messages: WithParts[] = [
         {
@@ -434,7 +439,7 @@ test("reconstructFromHistory handles block refs (bN) in ranges by consuming earl
     const logger = new Logger(false)
 
     assignMessageRefs(state, messages)
-    const reconstructed = reconstructFromHistory(state, logger, messages)
+    const reconstructed = await reconstructFromHistory(state, logger, messages)
 
     assert.equal(reconstructed, 2)
 
@@ -452,7 +457,7 @@ test("reconstructFromHistory handles block refs (bN) in ranges by consuming earl
     assert.ok(state.prune.messages.activeBlockIds.has(2))
 })
 
-test("reconstructFromHistory returns 0 when no compress results exist", () => {
+test("reconstructFromHistory returns 0 when no compress results exist", async () => {
     const sessionID = "ses_fork_no_compress"
     const messages: WithParts[] = [
         {
@@ -473,7 +478,7 @@ test("reconstructFromHistory returns 0 when no compress results exist", () => {
     const logger = new Logger(false)
 
     assignMessageRefs(state, messages)
-    const reconstructed = reconstructFromHistory(state, logger, messages)
+    const reconstructed = await reconstructFromHistory(state, logger, messages)
     assert.equal(reconstructed, 0)
     assert.equal(state.prune.messages.blocksById.size, 0)
 })

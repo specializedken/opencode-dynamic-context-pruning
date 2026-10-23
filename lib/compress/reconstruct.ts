@@ -2,8 +2,18 @@ import type { SessionState, WithParts } from "../state"
 import type { Logger } from "../logger"
 import { messageHasCompress } from "../messages/query"
 import { countTokens } from "../token-utils"
-import { buildSearchContext, resolveAnchorMessageId, resolveBoundaryIds, resolveSelection } from "./search"
-import { allocateBlockId, allocateRunId, applyCompressionState, wrapCompressedSummary } from "./state"
+import {
+    buildSearchContext,
+    resolveAnchorMessageId,
+    resolveBoundaryIds,
+    resolveSelection,
+} from "./search"
+import {
+    allocateBlockId,
+    allocateRunId,
+    applyCompressionState,
+    wrapCompressedSummary,
+} from "./state"
 
 interface CompressToolResult {
     messageId: string
@@ -28,7 +38,11 @@ function extractCompressResults(messages: WithParts[]): CompressToolResult[] {
 
         const parts = Array.isArray(message.parts) ? message.parts : []
         for (const part of parts) {
-            if (part.type !== "tool" || part.tool !== "compress" || part.state?.status !== "completed") {
+            if (
+                part.type !== "tool" ||
+                part.tool !== "compress" ||
+                part.state?.status !== "completed"
+            ) {
                 continue
             }
 
@@ -39,7 +53,11 @@ function extractCompressResults(messages: WithParts[]): CompressToolResult[] {
 
             const ranges: CompressToolResult["ranges"] = []
             for (const entry of input.content) {
-                if (typeof entry.startId === "string" && typeof entry.endId === "string" && typeof entry.summary === "string") {
+                if (
+                    typeof entry.startId === "string" &&
+                    typeof entry.endId === "string" &&
+                    typeof entry.summary === "string"
+                ) {
                     ranges.push({
                         startId: entry.startId,
                         endId: entry.endId,
@@ -74,11 +92,11 @@ export function hasCompressHistory(messages: WithParts[]): boolean {
     return false
 }
 
-export function reconstructFromHistory(
+export async function reconstructFromHistory(
     state: SessionState,
     logger: Logger,
     messages: WithParts[],
-): number {
+): Promise<number> {
     const compressResults = extractCompressResults(messages)
     if (compressResults.length === 0) {
         return 0
@@ -100,12 +118,16 @@ export function reconstructFromHistory(
                     range.endId,
                 )
 
-                const selection = resolveSelection(searchContext, startReference, endReference)
+                const selection = await resolveSelection(
+                    searchContext,
+                    startReference,
+                    endReference,
+                )
                 const anchorMessageId = resolveAnchorMessageId(startReference)
 
                 const blockId = allocateBlockId(state)
                 const storedSummary = wrapCompressedSummary(blockId, range.summary)
-                const summaryTokens = countTokens(storedSummary)
+                const summaryTokens = await countTokens(storedSummary)
 
                 const consumedBlockIds = selection.requiredBlockIds
 
