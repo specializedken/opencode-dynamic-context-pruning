@@ -6,6 +6,7 @@ import {
     appendMissingBlockSummaries,
     injectBlockPlaceholders,
     parseBlockPlaceholders,
+    removeDuplicateBlockPlaceholders,
     validateSummaryPlaceholders,
 } from "../lib/compress/range-utils"
 import { wrapCompressedSummary } from "../lib/compress/state"
@@ -117,4 +118,42 @@ test("compress range continues by appending required block summaries the model o
     assert.match(finalSummary.expandedSummary, /### \(b1\)/)
     assert.match(finalSummary.expandedSummary, /Recovered compressed summary/)
     assert.deepEqual(finalSummary.consumedBlockIds, [1])
+})
+
+test("duplicate block placeholders expand once and leave no stray refs", () => {
+    const summaryByBlockId = new Map([
+        [1, createBlock(1, "FIRST-BLOCK")],
+        [2, createBlock(2, "SECOND-BLOCK")],
+    ])
+    // Seen live: a local model listed @b3@..@b7@ twice in a merge summary.
+    const summary = removeDuplicateBlockPlaceholders("intro (b1) mid (b2) again (b1) and (b2) end")
+    const parsed = parseBlockPlaceholders(summary)
+    const missing = validateSummaryPlaceholders(
+        parsed,
+        [1, 2],
+        createMessageBoundary("msg-a", 0),
+        createMessageBoundary("msg-b", 1),
+        summaryByBlockId,
+    )
+    const injected = injectBlockPlaceholders(
+        summary,
+        parsed,
+        summaryByBlockId,
+        createMessageBoundary("msg-a", 0),
+        createMessageBoundary("msg-b", 1),
+    )
+
+    assert.deepEqual(missing, [])
+    assert.equal(injected.expandedSummary.match(/FIRST-BLOCK/g)?.length, 1)
+    assert.equal(injected.expandedSummary.match(/SECOND-BLOCK/g)?.length, 1)
+    assert.doesNotMatch(injected.expandedSummary, /\(b[12]\)/)
+    assert.match(injected.expandedSummary, /again\s+and\s+end/)
+})
+
+test("removeDuplicateBlockPlaceholders handles compact ids and keeps distinct blocks", () => {
+    assert.equal(
+        removeDuplicateBlockPlaceholders("@b3@ x @b4@ y @b3@ z @b4@", "compact"),
+        "@b3@ x @b4@ y  z ",
+    )
+    assert.equal(removeDuplicateBlockPlaceholders("@b1@ @b2@", "compact"), "@b1@ @b2@")
 })

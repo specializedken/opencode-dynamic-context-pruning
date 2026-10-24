@@ -20,6 +20,7 @@ import {
     injectBlockPlaceholders,
     normalizeRangeArgs,
     parseBlockPlaceholders,
+    removeDuplicateBlockPlaceholders,
     resolveRanges,
     validateArgs,
     validateNonOverlapping,
@@ -100,10 +101,11 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                 let totalCompressedMessages = 0
 
                 for (const plan of resolvedPlans) {
-                    const parsedPlaceholders = parseBlockPlaceholders(
+                    const summary = removeDuplicateBlockPlaceholders(
                         plan.entry.summary,
                         ctx.state.idFormat,
                     )
+                    const parsedPlaceholders = parseBlockPlaceholders(summary, ctx.state.idFormat)
                     const missingBlockIds = validateSummaryPlaceholders(
                         parsedPlaceholders,
                         plan.selection.requiredBlockIds,
@@ -113,7 +115,7 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                     )
 
                     const injected = injectBlockPlaceholders(
-                        plan.entry.summary,
+                        summary,
                         parsedPlaceholders,
                         searchContext.summaryByBlockId,
                         plan.selection.startReference,

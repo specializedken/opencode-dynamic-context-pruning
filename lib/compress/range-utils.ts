@@ -127,6 +127,28 @@ export function validateNonOverlapping(plans: ResolvedRangeCompression[]): void 
     }
 }
 
+/**
+ * Drops repeated placeholders for the same block, keeping the first. Only the first is
+ * expanded, so later copies would otherwise stay in the stored summary as stray block refs.
+ */
+export function removeDuplicateBlockPlaceholders(
+    summary: string,
+    format: IdFormat = "xml",
+): string {
+    const seen = new Set<number>()
+    let result = ""
+    let cursor = 0
+    for (const placeholder of parseBlockPlaceholders(summary, format)) {
+        if (!seen.has(placeholder.blockId)) {
+            seen.add(placeholder.blockId)
+            continue
+        }
+        result += summary.slice(cursor, placeholder.startIndex)
+        cursor = placeholder.endIndex
+    }
+    return result + summary.slice(cursor)
+}
+
 export function parseBlockPlaceholders(
     summary: string,
     format: IdFormat = "xml",

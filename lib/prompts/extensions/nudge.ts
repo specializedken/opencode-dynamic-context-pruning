@@ -13,13 +13,9 @@ function formatTokenEstimate(tokens: number): string {
 }
 
 /**
- * Occupancy guidance for compressed blocks. Block summaries stay in the model's
- * context forever, and in a heavily compressed session they are the largest
- * occupants - but the model only ever saw their labels, so it concluded there
- * was nothing left to compress. Making their cost visible and giving the model
- * an explicit decision order (drop what is no longer needed, merge only what
- * must survive the whole session, leave anything uncertain alone) fixes that
- * blind spot.
+ * Guidance for compressed blocks: which blocks are active, the placeholder
+ * syntax for ranges that span them, and the fact that spanning a block never
+ * shrinks it.
  */
 export function buildCompressedBlockGuidance(state: SessionState): string {
     const blocksById = state.prune.messages.blocksById
@@ -46,35 +42,16 @@ export function buildCompressedBlockGuidance(state: SessionState): string {
         return lines.join("\n")
     }
 
-    const sized = activeIds
-        .map((id) => ({ id, tokens: state.prune.messages.blocksById.get(id)?.summaryTokens ?? 0 }))
-        .sort((a, b) => b.tokens - a.tokens)
-    const totalTokens = sized.reduce((total, block) => total + block.tokens, 0)
-
-    lines.push("- Block summaries are part of your context and consume real tokens. Largest:")
-    const MAX_LISTED_BLOCKS = 8
-    const listed = sized.slice(0, MAX_LISTED_BLOCKS)
-    for (const block of listed) {
-        lines.push(
-            `  - ${formatBlockRef(block.id, state.idFormat)}: ${formatTokenEstimate(block.tokens)} tokens`,
-        )
-    }
-    const hiddenBlocks = sized.length - listed.length
-    if (hiddenBlocks > 0) {
-        lines.push(`  - ... +${hiddenBlocks} smaller`)
-    }
-    lines.push(`- Total held by block summaries: ${formatTokenEstimate(totalTokens)} tokens.`)
+    // Block summaries cannot be shrunk by compressing over them: every block inside a new
+    // range is carried into the new summary verbatim (placeholders are expanded, missing
+    // ones re-appended). Listing their token cost and suggesting merges led models to
+    // restart ranges at the first block, which discards the cached prompt prefix for no
+    // saving, so only state how blocks behave.
     lines.push(
-        "- Decision order: (1) DROP ranges no longer needed - a compress range removes their raw text and tool outputs from context entirely, the biggest win. (2) MERGE only content needed for as long as this session lives: compress a range covering those blocks (e.g. " +
-            formatBlockRef(1, state.idFormat) +
-            ".." +
-            formatBlockRef(8, state.idFormat) +
-            ") and reference each included block exactly once as `" +
-            placeholder +
-            "` in the new summary. (3) Leave anything uncertain alone.",
+        "- Prefer compressing closed raw messages after the latest block: their text and tool outputs leave context entirely.",
     )
     lines.push(
-        "- Merge caveat: merges are lossy and fuse blocks; merged blocks can no longer be re-compressed or decompressed separately. Keep blocks standalone unless they must persist to the end of the session.",
+        "- Including an earlier block in a range does not shrink it: its summary is carried into the new summary verbatim. A range that starts at an old block rewrites everything after it and discards the cached prompt, so only include blocks a range naturally spans.",
     )
     lines.push(
         `- If your selected compression range includes any listed block, include each required placeholder exactly once in the summary using \`${placeholder}\`.`,
