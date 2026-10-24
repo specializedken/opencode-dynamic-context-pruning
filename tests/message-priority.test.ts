@@ -465,7 +465,7 @@ test("message-mode nudges exclude protected user messages from priority guidance
     assert.doesNotMatch(injectedNudge?.text, /m0001/)
 })
 
-test("range-mode nudges for an assistant anchor become a user message after it", async () => {
+test("range-mode nudges for an assistant turn with tools go into its last tool result", async () => {
     const sessionID = "ses_range_nudge_injection"
     const messages: WithParts[] = [
         buildMessage("msg-user-1", "user", sessionID, repeatedWord("alpha", 6000), 1),
@@ -522,24 +522,20 @@ test("range-mode nudges for an assistant anchor become a user message after it",
         iterationNudge: "<dcp-system-reminder>Base iteration nudge</dcp-system-reminder>",
     })
 
-    // The assistant turn is untouched; the reminder is a user message right after it, so the
-    // replayed history never shows the assistant "writing" DCP text (models echoed it).
+    // A turn that called tools gets the reminder in its last tool result, in the environment's
+    // voice: no new message after the tool results, and the assistant's own text is untouched.
+    assert.equal(messages.length, 2)
     assert.equal(messages[1]?.parts.length, 2)
     const assistantText = messages[1]?.parts[0] as any
     const toolOutput = messages[1]?.parts[1] as any
     assert.equal(assistantText?.text, "Working summary.")
     assert.equal(toolOutput?.type, "tool")
-    assert.equal(toolOutput?.state.output, "task output body")
-    assert.doesNotMatch(JSON.stringify(messages[1]), /Base context nudge/)
-
-    const nudge = messages[2] as any
-    assert.equal(nudge?.info.role, "user")
-    assert.match(nudge?.info.id, /^msg_dcp_nudge_/)
-    assert.equal(nudge?.parts.length, 1)
-    assert.equal(nudge?.parts[0].synthetic, true)
-    assert.match(nudge?.parts[0].text, /Base context nudge/)
-    assert.match(nudge?.parts[0].text, /Compressed block context:/)
-    assert.match(nudge?.parts[0].text, /Active compressed blocks in this session: 1 \(b7\)/)
+    assert.match(
+        toolOutput?.state.output,
+        /^task output body\n\n<dcp-system-reminder>Base context nudge/,
+    )
+    assert.match(toolOutput?.state.output, /Compressed block context:/)
+    assert.match(toolOutput?.state.output, /Active compressed blocks in this session: 1 \(b7\)/)
 })
 
 test("range-mode nudges inject only once for assistant messages with multiple text parts", async () => {
@@ -1034,8 +1030,8 @@ test("range-mode anchored nudges stay byte-stable as the session grows and carry
         assignMessageRefs(state, messages)
         state.nudges.contextLimitAnchors.add("msg-assistant-1")
         applyAnchoredNudges(state, config, messages, prompts)
-        // The anchored assistant turn plus the reminder message inserted after it.
-        return JSON.stringify(messages.slice(0, 3))
+        // The anchored assistant turn, whose last tool result carries the reminder.
+        return JSON.stringify(messages.slice(0, 2))
     }
 
     const first = render(base())
@@ -1058,4 +1054,44 @@ test("range-mode anchored nudges stay byte-stable as the session grows and carry
     assert.match(first, /Base context nudge/)
     assert.doesNotMatch(first, /Largest uncompressed messages/)
     assert.equal(second, first)
+})
+
+test("reminders on one assistant turn keep their order when a later kind is added", async () => {
+    // Review finding: kinds were applied context, turn, iteration, so a turn reminder added on
+    // the next request was inserted ahead of an iteration reminder already sent.
+    const sessionID = "ses_nudge_kind_order"
+    const prompts = {
+        system: "",
+        compressRange: "",
+        compressMessage: "",
+        contextLimitNudge: "<dcp-system-reminder>CTX</dcp-system-reminder>",
+        turnNudge: "<dcp-system-reminder>TURN</dcp-system-reminder>",
+        iterationNudge: "<dcp-system-reminder>ITER</dcp-system-reminder>",
+    }
+    const base = (): WithParts[] => [
+        buildMessage("msg-user-1", "user", sessionID, "Go", 1),
+        buildMessage("msg-assistant-1", "assistant", sessionID, "Thinking out loud.", 2),
+    ]
+    const config = buildConfig("range")
+    const state = createSessionState()
+
+    const first = base()
+    assignMessageRefs(state, first)
+    state.nudges.iterationNudgeAnchors.add("msg-assistant-1")
+    applyAnchoredNudges(state, config, first, prompts)
+
+    const second = [...base(), buildMessage("msg-user-2", "user", sessionID, "Continue", 3)]
+    state.nudges.turnNudgeAnchors.add("msg-assistant-1")
+    state.nudges.turnNudgeAnchors.add("msg-user-2")
+    applyAnchoredNudges(state, config, second, prompts)
+
+    assert.deepEqual(second.slice(0, first.length), first)
+    assert.deepEqual(
+        second.map((message) =>
+            message.info.id.startsWith("msg_dcp_nudge")
+                ? (message.parts[0] as any).text.match(/ITER|TURN/)[0]
+                : message.info.id,
+        ),
+        ["msg-user-1", "msg-assistant-1", "ITER", "TURN", "msg-user-2"],
+    )
 })

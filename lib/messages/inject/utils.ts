@@ -239,6 +239,24 @@ function injectAnchoredNudge(
         return
     }
 
+    // A turn that called tools gets the reminder in its last tool result: the model reads it as
+    // environment output, and no message is added after the tool results. (A user message there
+    // makes some hosts insert a synthetic assistant "Done." turn for Mistral-family models, and
+    // moves the "last user query" that some Qwen chat templates use to drop earlier thinking.)
+    const lastToolPart = message.parts.findLast(
+        (part) =>
+            part.type === "tool" &&
+            part.state?.status === "completed" &&
+            typeof part.state.output === "string",
+    )
+    if (lastToolPart?.type === "tool" && lastToolPart.state.status === "completed") {
+        const reminder = nudgeText.trim()
+        if (!lastToolPart.state.output.includes(reminder)) {
+            lastToolPart.state.output = `${lastToolPart.state.output}\n\n${reminder}`
+        }
+        return
+    }
+
     const base = messages.slice(0, index).findLast((m) => m.info.role === "user") ?? message
     const nudge = createSyntheticNudgeMessage(base, message, kind, nudgeText)
     const existing = messages.findIndex((m) => m.info.id === nudge.info.id)
@@ -336,17 +354,17 @@ export function applyAnchoredNudges(
             compressionPriorities,
         )
         applyMessageModeAnchoredNudge(
-            turnNudgeAnchors,
-            messages,
-            prompts.turnNudge,
-            "turn",
-            compressionPriorities,
-        )
-        applyMessageModeAnchoredNudge(
             state.nudges.iterationNudgeAnchors,
             messages,
             prompts.iterationNudge,
             "iteration",
+            compressionPriorities,
+        )
+        applyMessageModeAnchoredNudge(
+            turnNudgeAnchors,
+            messages,
+            prompts.turnNudge,
+            "turn",
             compressionPriorities,
         )
         return
@@ -361,17 +379,17 @@ export function applyAnchoredNudges(
         "context",
     )
     applyRangeModeAnchoredNudge(
-        turnNudgeAnchors,
-        messages,
-        prompts.turnNudge,
-        compressedBlockGuidance,
-        "turn",
-    )
-    applyRangeModeAnchoredNudge(
         state.nudges.iterationNudgeAnchors,
         messages,
         prompts.iterationNudge,
         compressedBlockGuidance,
         "iteration",
+    )
+    applyRangeModeAnchoredNudge(
+        turnNudgeAnchors,
+        messages,
+        prompts.turnNudge,
+        compressedBlockGuidance,
+        "turn",
     )
 }
