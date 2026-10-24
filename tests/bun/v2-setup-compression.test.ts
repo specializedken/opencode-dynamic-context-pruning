@@ -231,6 +231,40 @@ test("v2 setup: hook exposes compress on an empty tool set and the compress tool
     assert.ok(restoredJson.includes("MARKER-B"), "content after the range must survive")
 })
 
+test("v2 setup: system prompt injection keeps every event.system entry a well-formed SystemPart (#640)", async () => {
+    const harness = await boot()
+    harness.modelLimits([{ providerID: "test", id: "test", limit: { context: 200000 } }])
+
+    // Populated system: DCP must append to the last part's text, never coerce
+    // the object to "[object Object]" and never replace extra part fields.
+    const populated: AnyRecord = hostEvent(`ses_v2system_${Date.now()}`)
+    populated.system = [
+        { type: "text", text: "First part." },
+        { type: "text", text: "You are a test agent.", cache: { type: "ephemeral" } },
+    ]
+    await harness.contextHook(populated)
+    assert.equal(populated.system.length, 2)
+    for (const part of populated.system) {
+        assert.equal(typeof part, "object", "system entries must be SystemPart objects")
+        assert.equal(part.type, "text")
+        assert.equal(typeof part.text, "string")
+        assert.ok(!part.text.includes("[object Object]"))
+    }
+    assert.equal(populated.system[0].text, "First part.")
+    assert.ok(populated.system[1].text.startsWith("You are a test agent.\n\n"))
+    assert.ok(populated.system[1].text.length > "You are a test agent.\n\n".length)
+    assert.deepEqual(populated.system[1].cache, { type: "ephemeral" })
+
+    // Empty system: the injected prompt must arrive as a SystemPart, not a bare string.
+    const empty: AnyRecord = hostEvent(`ses_v2system_empty_${Date.now()}`)
+    empty.system = []
+    await harness.contextHook(empty)
+    assert.equal(empty.system.length, 1)
+    assert.equal(typeof empty.system[0], "object", "injected prompt must not be a bare string")
+    assert.equal(empty.system[0].type, "text")
+    assert.ok(empty.system[0].text.length > 0)
+})
+
 test("v2 setup: compression blocks survive a plugin reload (service restart)", async () => {
     const sessionID = `ses_v2reload_${Date.now()}`
     const first = await boot()
