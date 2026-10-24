@@ -126,6 +126,28 @@ function stringifyToolContent(value: unknown): string {
     return typeof value === "string" ? value : JSON.stringify(value)
 }
 
+const MEDIA_PAYLOAD_KEYS = new Set(["uri", "url", "data"])
+
+// Structured tool results (V2) can carry media as data URIs. Providers bill an image at a
+// small fixed cost, so tokenizing its base64 as text inflated usage by hundreds of thousands
+// of tokens and triggered compression far below the configured limits. Keep only the
+// descriptive fields of media items; reported provider usage still covers their real cost.
+function withoutMediaPayloads(value: unknown): unknown {
+    if (!Array.isArray(value)) {
+        return value
+    }
+    return value.map((item) => {
+        if (!item || typeof item !== "object" || (item as { type?: unknown }).type === "text") {
+            return item
+        }
+        return Object.fromEntries(
+            Object.entries(item as Record<string, unknown>).filter(
+                ([key]) => !MEDIA_PAYLOAD_KEYS.has(key),
+            ),
+        )
+    })
+}
+
 export function extractCompletedToolOutput(part: any): string | undefined {
     if (
         part?.type !== "tool" ||
@@ -139,7 +161,7 @@ export function extractCompletedToolOutput(part: any): string | undefined {
         return COMPACTED_TOOL_OUTPUT_PLACEHOLDER
     }
 
-    return stringifyToolContent(part.state.output)
+    return stringifyToolContent(withoutMediaPayloads(part.state.output))
 }
 
 export function extractToolContent(part: any): string[] {

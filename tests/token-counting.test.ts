@@ -173,3 +173,29 @@ test("counting uses the compacted tool placeholder for completed outputs", async
     assert.equal(extractCompletedToolOutput(part), COMPACTED_TOOL_OUTPUT_PLACEHOLDER)
     await assertCounted(part, [JSON.stringify(input), COMPACTED_TOOL_OUTPUT_PLACEHOLDER])
 })
+
+test("counting ignores media payloads in structured tool results (V2 image reads)", async () => {
+    // Seen live: three V2 `read` results carried PNG screenshots as data URIs (808k chars).
+    // Tokenizing the base64 as text inflated usage past the min threshold on a 1M-context
+    // model at ~200k real tokens, so DCP kept nudging compression.
+    const base64 = "iVBORw0KGgo".repeat(30000)
+    const part = buildToolPart("read", {
+        status: "completed",
+        input: { filePath: "/tmp/shot.png" },
+        output: [
+            { type: "text", text: "Image read successfully" },
+            {
+                type: "file",
+                uri: `data:image/png;base64,${base64}`,
+                mime: "image/png",
+                name: "/tmp/shot.png",
+            },
+        ],
+    })
+
+    const output = extractCompletedToolOutput(part) ?? ""
+    assert.doesNotMatch(output, /iVBORw0KGgo/)
+    assert.match(output, /image\/png/)
+    assert.match(output, /Image read successfully/)
+    assert.ok((await countToolTokens(part)) < 200, "an image must not count as its base64 length")
+})
