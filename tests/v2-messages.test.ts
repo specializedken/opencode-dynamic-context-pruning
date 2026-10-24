@@ -292,3 +292,102 @@ test("media stripping leaves ordinary JSON tool output with a data field alone",
     })
     assert.equal(output, JSON.stringify({ type: "json", data: { rows: [1, 2, 3] } }))
 })
+
+test("V2 request: reminders on a tool turn ride in its tool result, never in the assistant content", async () => {
+    // Live on OpenRouter/Mimo: reminders added as text parts of an earlier assistant turn were
+    // joined into that turn's content ("...is actually alive:<dcp-system-reminder>..."), and the
+    // model copied the block into its own replies.
+    const { applyAnchoredNudges } = await import("../lib/messages/inject/utils")
+    const native = (): Message[] =>
+        [
+            { id: "msg_user", role: "user", content: [{ type: "text", text: "Build it" }] },
+            {
+                id: "msg_assistant",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Checking whether the build is actually alive:" },
+                    { type: "tool-call", id: "call_ps", name: "shell", input: { command: "ps" } },
+                ],
+            },
+            {
+                role: "tool",
+                content: [
+                    {
+                        type: "tool-result",
+                        id: "call_ps",
+                        name: "shell",
+                        result: { type: "text", value: "no build processes" },
+                    },
+                ],
+            },
+        ] as Message[]
+    const prompts = {
+        system: "",
+        compressRange: "",
+        compressMessage: "",
+        contextLimitNudge: "<dcp-system-reminder>CTX</dcp-system-reminder>",
+        turnNudge: "<dcp-system-reminder>TURN</dcp-system-reminder>",
+        iterationNudge: "<dcp-system-reminder>ITERATION</dcp-system-reminder>",
+    }
+    const request = () => {
+        const messages = native()
+        const view = project(messages, entries(messages), session)
+        const state = createSessionState()
+        state.idFormat = "compact"
+        assignMessageRefs(state, view.messages)
+        state.nudges.iterationNudgeAnchors.add("msg_assistant")
+        applyAnchoredNudges(state, config, view.messages, prompts as any)
+        return view.restore()
+    }
+
+    const restored = request()
+    const assistant = restored.find((message) => message.id === "msg_assistant")!
+    assert.doesNotMatch(JSON.stringify(assistant), /dcp-system-reminder|ITERATION/)
+    // The reminder rides in the tool result: nothing is added after it. A user message right
+    // after tool results makes the OpenAI-chat lowering insert an assistant "Done." turn for
+    // Mistral-family models (requireAssistantAfterTool).
+    assert.equal(restored.length, 3)
+    const tool = restored[2]!
+    assert.equal(tool.role, "tool")
+    assert.match(
+        JSON.stringify(tool.content),
+        /no build processes\\n\\n<dcp-system-reminder>ITERATION/,
+    )
+    // Byte-stable across requests, so the cached prefix survives.
+    assert.equal(JSON.stringify(request()), JSON.stringify(restored))
+})
+
+test("V2 request: a reminder on a text-only assistant turn is a user message before the next user turn", async () => {
+    const { applyAnchoredNudges } = await import("../lib/messages/inject/utils")
+    const native = [
+        { id: "msg_user", role: "user", content: [{ type: "text", text: "Explain" }] },
+        {
+            id: "msg_assistant",
+            role: "assistant",
+            content: [{ type: "text", text: "Here is why." }],
+        },
+        { id: "msg_user_2", role: "user", content: [{ type: "text", text: "Go on" }] },
+    ] as Message[]
+    const view = project(native, entries(native), session)
+    const state = createSessionState()
+    state.idFormat = "compact"
+    assignMessageRefs(state, view.messages)
+    state.nudges.turnNudgeAnchors.add("msg_assistant")
+    applyAnchoredNudges(state, config, view.messages, {
+        system: "",
+        compressRange: "",
+        compressMessage: "",
+        contextLimitNudge: "<dcp-system-reminder>CTX</dcp-system-reminder>",
+        turnNudge: "<dcp-system-reminder>TURN</dcp-system-reminder>",
+        iterationNudge: "<dcp-system-reminder>ITER</dcp-system-reminder>",
+    } as any)
+    const restored = view.restore()
+
+    assert.deepEqual(
+        restored.map((message) => message.role),
+        ["user", "assistant", "user", "user"],
+    )
+    assert.doesNotMatch(JSON.stringify(restored[1]), /TURN/)
+    assert.match(JSON.stringify(restored[2]!.content), /TURN/)
+    assert.equal(restored[3]!.id, "msg_user_2")
+})

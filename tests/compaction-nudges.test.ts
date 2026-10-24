@@ -55,7 +55,7 @@ test("compaction replays existing nudges without changing the cached prefix or a
         { ...user, info: { ...user.info, id: "msg_later" } },
     ]) as WithParts[]
     await injectCompressNudges(state, config, logger, compact, prompts, undefined, false)
-    assert.deepEqual(compact.slice(0, raw.length), primary)
+    assert.deepEqual(compact.slice(0, primary.length), primary)
     assert.deepEqual(state.nudges, anchors)
     assert.doesNotMatch(JSON.stringify(compact.at(-1)), /NUDGE_KEEP/)
 })
