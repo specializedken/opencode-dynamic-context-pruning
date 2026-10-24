@@ -9,6 +9,8 @@ const DCP_BLOCK_ID_TAG_REGEX = /(<dcp-message-id(?=[\s>])[^>]*>)b\d+(<\/dcp-mess
 const DCP_PAIRED_TAG_REGEX = /<dcp[^>]*>[\s\S]*?<\/dcp[^>]*>/gi
 const DCP_UNPAIRED_TAG_REGEX = /<\/?dcp[^>]*>/gi
 const INJECTED_MESSAGE_ID_SUFFIX_REGEX = /(?<=\n)<dcp-message-id[^>]*>m\d+<\/dcp-message-id>\s*$/
+const INJECTED_TOOL_ID_SUFFIX_REGEX =
+    /\n<dcp-message-id(?=[\s>])[^>]*>(?:m\d+|b\d+|BLOCKED)<\/dcp-message-id>\s*$/
 const HALLUCINATED_PARAMETER_SUFFIX_REGEX = /(?<=\n)m\d+<\/parameter>\s*$/
 const COMPACT_TAG_REGEX = /@(?:[1-9]\d*|b[1-9]\d*|blocked)@(?:[ \t]+\[(?:low|medium|high)\])?/gi
 
@@ -216,10 +218,19 @@ export const stripHallucinationsFromString = (text: string, format: IdFormat = "
         .replace(DCP_UNPAIRED_TAG_REGEX, "")
 }
 
+// Tool outputs and user text are not model-authored: they may legitimately contain
+// <dcp-*> blocks (e.g. reading DCP's own prompts), so only DCP's injected ID markers
+// are removed there. Full stripping is reserved for the model's own text.
+const stripInjectedIdMarkers = (text: string, format: IdFormat): string => {
+    if (format === "compact") return text.replace(COMPACT_TAG_REGEX, "")
+    return text.replace(INJECTED_TOOL_ID_SUFFIX_REGEX, "")
+}
+
 export const stripHallucinations = (messages: WithParts[], format: IdFormat = "xml"): void => {
     for (const message of messages) {
+        const isUser = message.info.role === "user"
         for (const part of message.parts) {
-            if (part.type === "text" && typeof part.text === "string") {
+            if (part.type === "text" && typeof part.text === "string" && !isUser) {
                 part.text = stripHallucinationsFromString(part.text, format)
             }
 
@@ -228,7 +239,7 @@ export const stripHallucinations = (messages: WithParts[], format: IdFormat = "x
                 part.state?.status === "completed" &&
                 typeof part.state.output === "string"
             ) {
-                part.state.output = stripHallucinationsFromString(part.state.output, format)
+                part.state.output = stripInjectedIdMarkers(part.state.output, format)
             }
         }
     }
