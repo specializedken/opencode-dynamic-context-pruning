@@ -12,7 +12,12 @@ import {
     type MessagePriority,
     listPriorityRefsBeforeIndex,
 } from "../priority"
-import { hasContent, pushSyntheticTextPart } from "../utils"
+import {
+    NUDGE_MESSAGE_PREFIX,
+    createSyntheticNudgeMessage,
+    hasContent,
+    pushSyntheticTextPart,
+} from "../utils"
 import { getLastUserMessage, isIgnoredUserMessage } from "../query"
 import { getCurrentTokenUsage } from "../../token-utils"
 import { getActiveSummaryTokenUsage } from "../../state/utils"
@@ -207,41 +212,50 @@ function buildMessagePriorityGuidance(
     return renderMessagePriorityGuidance(priorityLabel, refs)
 }
 
-function injectAnchoredNudge(message: WithParts, nudgeText: string): void {
+function injectAnchoredNudge(
+    messages: WithParts[],
+    anchorId: string,
+    kind: string,
+    nudgeText: string,
+): void {
     if (!nudgeText.trim()) {
         return
     }
 
-    // Keep skipping content-less assistant messages: a leading text part on an
-    // empty assistant message is treated as prefill by providers (issue #463).
-    if (message.info.role === "assistant" && !hasContent(message)) {
+    const index = messages.findIndex((message) => message.info.id === anchorId)
+    if (index === -1) {
+        return
+    }
+    const message = messages[index]
+
+    if (message.info.role !== "assistant") {
+        // Already in the user's voice: a standalone synthetic part, never authored text.
+        pushSyntheticTextPart(message, nudgeText)
         return
     }
 
-    // Always a standalone synthetic part: appending into authored text has
-    // leaked persisted nudges into visible chat bubbles.
-    pushSyntheticTextPart(message, nudgeText)
-}
-
-function collectAnchoredMessages(
-    anchorMessageIds: Set<string>,
-    messages: WithParts[],
-): Array<{ message: WithParts; index: number }> {
-    const anchoredMessages: Array<{ message: WithParts; index: number }> = []
-
-    for (const anchorMessageId of anchorMessageIds) {
-        const index = messages.findIndex((message) => message.info.id === anchorMessageId)
-        if (index === -1) {
-            continue
-        }
-
-        anchoredMessages.push({
-            message: messages[index],
-            index,
-        })
+    // Keep skipping content-less assistant messages (issue #463).
+    if (!hasContent(message)) {
+        return
     }
 
-    return anchoredMessages
+    const base = messages.slice(0, index).findLast((m) => m.info.role === "user") ?? message
+    const nudge = createSyntheticNudgeMessage(base, message, kind, nudgeText)
+    const existing = messages.findIndex((m) => m.info.id === nudge.info.id)
+    if (existing !== -1) {
+        messages[existing] = nudge
+        return
+    }
+
+    // After the anchor and any reminders already attached to it, in a fixed kind order.
+    let position = index + 1
+    while (
+        position < messages.length &&
+        messages[position].info.id.startsWith(NUDGE_MESSAGE_PREFIX)
+    ) {
+        position++
+    }
+    messages.splice(position, 0, nudge)
 }
 
 function collectTurnNudgeAnchors(
@@ -268,14 +282,15 @@ function applyRangeModeAnchoredNudge(
     messages: WithParts[],
     baseNudgeText: string,
     compressedBlockGuidance: string,
+    kind: string,
 ): void {
     const nudgeText = appendGuidanceToDcpTag(baseNudgeText, compressedBlockGuidance)
     if (!nudgeText.trim()) {
         return
     }
 
-    for (const { message } of collectAnchoredMessages(anchorMessageIds, messages)) {
-        injectAnchoredNudge(message, nudgeText)
+    for (const anchorId of anchorMessageIds) {
+        injectAnchoredNudge(messages, anchorId, kind, nudgeText)
     }
 }
 
@@ -283,9 +298,15 @@ function applyMessageModeAnchoredNudge(
     anchorMessageIds: Set<string>,
     messages: WithParts[],
     baseNudgeText: string,
+    kind: string,
     compressionPriorities?: CompressionPriorityMap,
 ): void {
-    for (const { message, index } of collectAnchoredMessages(anchorMessageIds, messages)) {
+    for (const anchorId of anchorMessageIds) {
+        // Look the index up per anchor: reminders inserted for earlier anchors shift positions.
+        const index = messages.findIndex((message) => message.info.id === anchorId)
+        if (index === -1) {
+            continue
+        }
         const priorityGuidance = buildMessagePriorityGuidance(
             messages,
             compressionPriorities,
@@ -293,7 +314,7 @@ function applyMessageModeAnchoredNudge(
             MESSAGE_MODE_NUDGE_PRIORITY,
         )
         const nudgeText = appendGuidanceToDcpTag(baseNudgeText, priorityGuidance)
-        injectAnchoredNudge(message, nudgeText)
+        injectAnchoredNudge(messages, anchorId, kind, nudgeText)
     }
 }
 
@@ -311,18 +332,21 @@ export function applyAnchoredNudges(
             state.nudges.contextLimitAnchors,
             messages,
             prompts.contextLimitNudge,
+            "context",
             compressionPriorities,
         )
         applyMessageModeAnchoredNudge(
             turnNudgeAnchors,
             messages,
             prompts.turnNudge,
+            "turn",
             compressionPriorities,
         )
         applyMessageModeAnchoredNudge(
             state.nudges.iterationNudgeAnchors,
             messages,
             prompts.iterationNudge,
+            "iteration",
             compressionPriorities,
         )
         return
@@ -334,17 +358,20 @@ export function applyAnchoredNudges(
         messages,
         prompts.contextLimitNudge,
         compressedBlockGuidance,
+        "context",
     )
     applyRangeModeAnchoredNudge(
         turnNudgeAnchors,
         messages,
         prompts.turnNudge,
         compressedBlockGuidance,
+        "turn",
     )
     applyRangeModeAnchoredNudge(
         state.nudges.iterationNudgeAnchors,
         messages,
         prompts.iterationNudge,
         compressedBlockGuidance,
+        "iteration",
     )
 }

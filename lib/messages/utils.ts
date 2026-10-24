@@ -51,6 +51,45 @@ export const createSyntheticUserMessage = (
     }
 }
 
+export const NUDGE_MESSAGE_PREFIX = "msg_dcp_nudge"
+
+/**
+ * A reminder that belongs to an assistant turn, rendered as its own user message right after
+ * it. Reminders inside the assistant's own content were echoed by models into their replies,
+ * because the replayed history showed the assistant "writing" them. The id, timestamp and part
+ * are derived from the anchor and kind only, so every replay renders identically.
+ */
+export const createSyntheticNudgeMessage = (
+    baseMessage: WithParts,
+    anchor: WithParts,
+    kind: string,
+    content: string,
+): WithParts => {
+    const userInfo = baseMessage.info as UserMessage
+    const seed = `nudge:${anchor.info.id}:${kind}`
+    const messageId = generateStableId(NUDGE_MESSAGE_PREFIX, seed)
+    return {
+        info: {
+            id: messageId,
+            sessionID: userInfo.sessionID,
+            role: "user" as const,
+            agent: userInfo.agent,
+            model: userInfo.model,
+            time: { created: anchor.info.time?.created ?? 0 },
+        },
+        parts: [
+            {
+                id: generateStableId("prt_dcp_nudge", seed),
+                sessionID: userInfo.sessionID,
+                messageID: messageId,
+                type: "text" as const,
+                text: content,
+                synthetic: true,
+            },
+        ],
+    } as WithParts
+}
+
 export const createSyntheticTextPart = (
     baseMessage: WithParts,
     content: string,

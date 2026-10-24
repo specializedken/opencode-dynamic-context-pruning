@@ -465,7 +465,7 @@ test("message-mode nudges exclude protected user messages from priority guidance
     assert.doesNotMatch(injectedNudge?.text, /m0001/)
 })
 
-test("range-mode nudges ride in a synthetic part without touching tool outputs", async () => {
+test("range-mode nudges for an assistant anchor become a user message after it", async () => {
     const sessionID = "ses_range_nudge_injection"
     const messages: WithParts[] = [
         buildMessage("msg-user-1", "user", sessionID, repeatedWord("alpha", 6000), 1),
@@ -522,19 +522,24 @@ test("range-mode nudges ride in a synthetic part without touching tool outputs",
         iterationNudge: "<dcp-system-reminder>Base iteration nudge</dcp-system-reminder>",
     })
 
-    assert.equal(messages[1]?.parts.length, 3)
-
-    const injectedNudge = messages[1]?.parts[2] as any
-    const toolOutput = messages[1]?.parts[1] as any
+    // The assistant turn is untouched; the reminder is a user message right after it, so the
+    // replayed history never shows the assistant "writing" DCP text (models echoed it).
+    assert.equal(messages[1]?.parts.length, 2)
     const assistantText = messages[1]?.parts[0] as any
+    const toolOutput = messages[1]?.parts[1] as any
     assert.equal(assistantText?.text, "Working summary.")
-    assert.equal(injectedNudge?.type, "text")
-    assert.equal(injectedNudge?.synthetic, true)
     assert.equal(toolOutput?.type, "tool")
-    assert.match(injectedNudge?.text, /Base context nudge/)
-    assert.match(injectedNudge?.text, /Compressed block context:/)
-    assert.match(injectedNudge?.text, /Active compressed blocks in this session: 1 \(b7\)/)
     assert.equal(toolOutput?.state.output, "task output body")
+    assert.doesNotMatch(JSON.stringify(messages[1]), /Base context nudge/)
+
+    const nudge = messages[2] as any
+    assert.equal(nudge?.info.role, "user")
+    assert.match(nudge?.info.id, /^msg_dcp_nudge_/)
+    assert.equal(nudge?.parts.length, 1)
+    assert.equal(nudge?.parts[0].synthetic, true)
+    assert.match(nudge?.parts[0].text, /Base context nudge/)
+    assert.match(nudge?.parts[0].text, /Compressed block context:/)
+    assert.match(nudge?.parts[0].text, /Active compressed blocks in this session: 1 \(b7\)/)
 })
 
 test("range-mode nudges inject only once for assistant messages with multiple text parts", async () => {
@@ -570,14 +575,21 @@ test("range-mode nudges inject only once for assistant messages with multiple te
         iterationNudge: "<dcp-system-reminder>Base iteration nudge</dcp-system-reminder>",
     })
 
-    const nudgeParts = (messages[1]?.parts as any[]).filter(
-        (part) => part?.type === "text" && part.synthetic && /Base context nudge/.test(part.text),
-    )
-    assert.equal(nudgeParts.length, 1)
-    for (const part of messages[1]?.parts as any[]) {
-        if (part?.synthetic) continue
-        assert.doesNotMatch(part?.text, /Base context nudge/)
-    }
+    const nudgeMessages = messages.filter((message) => message.info.id.startsWith("msg_dcp_nudge"))
+    assert.equal(nudgeMessages.length, 1)
+    assert.equal(messages.length, 3)
+    assert.doesNotMatch(JSON.stringify(messages[1]), /Base context nudge/)
+
+    // Re-applying (the next request replays persisted anchors) must not duplicate it.
+    applyAnchoredNudges(state, config, messages, {
+        system: "",
+        compressRange: "",
+        compressMessage: "",
+        contextLimitNudge: "<dcp-system-reminder>Base context nudge</dcp-system-reminder>",
+        turnNudge: "<dcp-system-reminder>Base turn nudge</dcp-system-reminder>",
+        iterationNudge: "<dcp-system-reminder>Base iteration nudge</dcp-system-reminder>",
+    })
+    assert.equal(messages.length, 3)
 })
 
 test("range-mode nudges skip empty assistant messages to avoid prefill (issue #463)", async () => {
@@ -1022,7 +1034,8 @@ test("range-mode anchored nudges stay byte-stable as the session grows and carry
         assignMessageRefs(state, messages)
         state.nudges.contextLimitAnchors.add("msg-assistant-1")
         applyAnchoredNudges(state, config, messages, prompts)
-        return JSON.stringify(messages[1]?.parts)
+        // The anchored assistant turn plus the reminder message inserted after it.
+        return JSON.stringify(messages.slice(0, 3))
     }
 
     const first = render(base())

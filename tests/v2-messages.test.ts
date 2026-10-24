@@ -292,3 +292,61 @@ test("media stripping leaves ordinary JSON tool output with a data field alone",
     })
     assert.equal(output, JSON.stringify({ type: "json", data: { rows: [1, 2, 3] } }))
 })
+
+test("V2 request: anchored reminders go in a user message after the turn, never in the assistant's content", async () => {
+    // Live on OpenRouter/Mimo: reminders added as text parts of an earlier assistant turn were
+    // joined into that turn's content ("...is actually alive:<dcp-system-reminder>..."), and the
+    // model copied the block into its own replies.
+    const { applyAnchoredNudges } = await import("../lib/messages/inject/utils")
+    const native = (): Message[] =>
+        [
+            { id: "msg_user", role: "user", content: [{ type: "text", text: "Build it" }] },
+            {
+                id: "msg_assistant",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Checking whether the build is actually alive:" },
+                    { type: "tool-call", id: "call_ps", name: "shell", input: { command: "ps" } },
+                ],
+            },
+            {
+                role: "tool",
+                content: [
+                    {
+                        type: "tool-result",
+                        id: "call_ps",
+                        name: "shell",
+                        result: { type: "text", value: "no build processes" },
+                    },
+                ],
+            },
+        ] as Message[]
+    const prompts = {
+        system: "",
+        compressRange: "",
+        compressMessage: "",
+        contextLimitNudge: "<dcp-system-reminder>CTX</dcp-system-reminder>",
+        turnNudge: "<dcp-system-reminder>TURN</dcp-system-reminder>",
+        iterationNudge: "<dcp-system-reminder>ITERATION</dcp-system-reminder>",
+    }
+    const request = () => {
+        const messages = native()
+        const view = project(messages, entries(messages), session)
+        const state = createSessionState()
+        state.idFormat = "compact"
+        assignMessageRefs(state, view.messages)
+        state.nudges.iterationNudgeAnchors.add("msg_assistant")
+        applyAnchoredNudges(state, config, view.messages, prompts as any)
+        return view.restore()
+    }
+
+    const restored = request()
+    const assistant = restored.find((message) => message.id === "msg_assistant")!
+    assert.doesNotMatch(JSON.stringify(assistant), /dcp-system-reminder|ITERATION/)
+    const toolIndex = restored.findIndex((message) => message.role === "tool")
+    const after = restored[toolIndex + 1]!
+    assert.equal(after.role, "user")
+    assert.match(JSON.stringify(after.content), /ITERATION/)
+    // Byte-stable across requests, so the cached prefix survives.
+    assert.equal(JSON.stringify(request()), JSON.stringify(restored))
+})
