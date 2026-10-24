@@ -252,11 +252,31 @@ export async function setup(ctx: Plugin.Context) {
         })
     }
 
+    // A model.transform only sees the registry at its own position in the
+    // host's transform chain: opencode.json `limit` overrides can be merged
+    // after it, leaving the 200000 fallback here (#658). The transform marks
+    // the served limits stale; hooks re-read them from the settled registry and
+    // fall back to this snapshot only when the host cannot list models.
+    let served: Promise<Map<string, number>> | undefined
     await ctx.model.transform((editor) => {
+        served = undefined
         limits.clear()
         for (const model of editor.list())
             limits.set(`${model.providerID}/${model.id}`, model.limit.context)
     })
+    async function contextLimit(model: { providerID: string; id: string }) {
+        served ??= (async () => {
+            const { data } = await ctx.model.list()
+            return new Map(
+                data.map((info) => [`${info.providerID}/${info.id}`, info.limit.context]),
+            )
+        })().catch((error) => {
+            logger.debug("V2 model list failed; using transform limits", { error: String(error) })
+            return limits
+        })
+        const key = `${model.providerID}/${model.id}`
+        return (await served).get(key) ?? limits.get(key)
+    }
     for (const kind of ["context", "compaction"] as const)
         await ctx.session.hook(kind, (event) =>
             serial(event.sessionID, async () => {
@@ -283,7 +303,7 @@ export async function setup(ctx: Plugin.Context) {
                         }
                     }
                 }
-                state.modelContextLimit = limits.get(`${event.model.providerID}/${event.model.id}`)
+                state.modelContextLimit = await contextLimit(event.model)
                 state.systemPromptTokens = await countTokens(
                     event.system.map((part) => part.text).join("\n"),
                 )
@@ -487,5 +507,6 @@ export async function setup(ctx: Plugin.Context) {
     return () => {
         sessions.clear()
         limits.clear()
+        served = undefined
     }
 }
