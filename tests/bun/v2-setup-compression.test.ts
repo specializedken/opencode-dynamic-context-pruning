@@ -33,7 +33,10 @@ interface Harness {
     modelLimits: (list: any[]) => void
 }
 
-async function boot(): Promise<Harness> {
+async function boot(
+    entries: () => any[] = entriesFixture,
+    host: <T>(value: T) => T = (value) => value,
+): Promise<Harness> {
     // Every setup() call builds fresh closures and state maps — the same
     // lifecycle a plugin reload after a service restart goes through.
     let contextHook: ((event: AnyRecord) => Promise<void>) | undefined
@@ -56,12 +59,12 @@ async function boot(): Promise<Harness> {
         client: {},
         agent: {
             get: async ({ agentID }: any) => ({
-                data: { id: agentID, permissions: agentPermissions },
+                data: host({ id: agentID, permissions: agentPermissions }),
             }),
         },
         session: {
-            get: async ({ sessionID }: any) => sessionRow(sessionID),
-            context: async () => entriesFixture(),
+            get: async ({ sessionID }: any) => host(sessionRow(sessionID)),
+            context: async () => host(entries()),
             hook: async (kind: string, cb: (event: AnyRecord) => Promise<void>) => {
                 if (kind === "context") contextHook = cb
                 return { dispose: async () => {} }
@@ -286,4 +289,92 @@ test("v2 setup: a corrupt state file is never overwritten by a write-through sav
         garbage,
         "write-through saves must not destroy the unreadable file",
     )
+})
+
+function deepFreeze<T>(value: T): T {
+    if (value && typeof value === "object" && !Object.isFrozen(value)) {
+        Object.freeze(value)
+        for (const child of Object.values(value)) deepFreeze(child)
+    }
+    return value
+}
+
+test("v2 setup: compress and the context hook never write to frozen host objects (#654)", async () => {
+    // OpenCode V2 hands plugins readonly messages, parts and tool args; under
+    // Bun (strict mode) any in-place assignment throws "Attempted to assign to
+    // readonly property". Freeze everything the host owns, including a nested
+    // question-tool input that pruning rewrites, and run a full cycle.
+    const sessionID = `ses_v2frozen_${Date.now()}`
+    const question = () => ({
+        questions: [{ question: "Which approach?", options: [{ label: "A" }, { label: "B" }] }],
+    })
+    const entries = () => [
+        ...entriesFixture().slice(0, 3),
+        {
+            id: "msg-4",
+            type: "assistant",
+            time: { created: 4 },
+            agent: "build",
+            model: { id: "test", providerID: "test" },
+            content: [
+                { type: "text", text: PAD_B },
+                {
+                    type: "tool",
+                    id: "call_q",
+                    name: "question",
+                    state: {
+                        status: "completed",
+                        input: question(),
+                        content: [{ type: "text", text: "User picked A" }],
+                        metadata: { answers: [["A"]] },
+                    },
+                },
+            ],
+        },
+    ]
+    const event = () => ({
+        ...hostEvent(sessionID),
+        messages: deepFreeze([
+            ...nativeTranscript().slice(0, 3),
+            {
+                id: "msg-4",
+                role: "assistant",
+                content: [
+                    { type: "text", text: PAD_B },
+                    { type: "tool-call", id: "call_q", name: "question", input: question() },
+                ],
+            },
+            {
+                role: "tool",
+                content: [
+                    {
+                        type: "tool-result",
+                        id: "call_q",
+                        name: "question",
+                        result: { type: "text", value: "User picked A" },
+                    },
+                ],
+            },
+        ]) as unknown as Message[],
+    })
+
+    const harness = await boot(entries, deepFreeze)
+    harness.modelLimits([{ providerID: "test", id: "test", limit: { context: 200000 } }])
+
+    await harness.contextHook(event())
+    const result = await harness.toolAdd.execute(
+        deepFreeze({
+            topic: "Frozen host e2e",
+            content: [{ startId: "@1@", endId: "@2@", summary: "Frozen opening summary." }],
+        }),
+        { sessionID, agent: "build", messageID: "msg-tool", id: "call_1", progress: () => {} },
+    )
+    assert.match(String(result.content), /Compressed 2 messages/)
+
+    const next = event()
+    await harness.contextHook(next)
+    const json = JSON.stringify(next.messages)
+    assert.ok(json.includes("Frozen opening summary."), "summary block must be present")
+    assert.ok(!json.includes("MARKER-A"), "compressed range content must be gone")
+    assert.ok(json.includes("MARKER-B"), "tail content must survive")
 })
