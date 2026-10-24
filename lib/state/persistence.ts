@@ -11,7 +11,7 @@ import { homedir } from "os"
 import { join } from "path"
 import type { CompressionBlock, PrunedMessageEntry, SessionState, SessionStats } from "./types"
 import type { Logger } from "../logger"
-import { serializePruneMessagesState } from "./utils"
+import { isManualModeEnabled, serializePruneMessagesState } from "./utils"
 
 /** Monotonic counter making each atomic-write temp path unique within a process. */
 let tmpSequence = 0
@@ -112,7 +112,7 @@ export async function saveSessionState(
 
         const state: PersistedSessionState = {
             sessionName: sessionName,
-            manualMode: !!sessionState.manualMode,
+            manualMode: isManualModeEnabled(sessionState),
             prune: {
                 tools: Object.fromEntries(sessionState.prune.tools),
                 messages: serializePruneMessagesState(sessionState.prune.messages),

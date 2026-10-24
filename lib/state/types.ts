@@ -97,6 +97,8 @@ export interface SessionState {
     sessionId: string | null
     isSubAgent: boolean
     manualMode: false | "active" | "compress-pending"
+    /** Whether manual mode was on when a /dcp-compress trigger set "compress-pending". */
+    manualModeBeforeTrigger: boolean
     compressPermission: "ask" | "allow" | "deny" | undefined
     pendingManualTrigger: PendingManualTrigger | null
     prune: Prune

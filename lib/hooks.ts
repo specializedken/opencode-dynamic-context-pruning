@@ -36,7 +36,13 @@ import {
 } from "./commands"
 import { type HostPermissionSnapshot } from "./host-permissions"
 import { compressPermission, syncCompressPermissionState } from "./compress-permission"
-import { checkSession, ensureSessionInitialized, saveSessionState, syncToolCache } from "./state"
+import {
+    checkSession,
+    ensureSessionInitialized,
+    isManualModeEnabled,
+    saveSessionState,
+    syncToolCache,
+} from "./state"
 import { reconstructFromHistory } from "./compress/reconstruct"
 import { cacheSystemPromptTokens } from "./ui/utils"
 
@@ -94,7 +100,7 @@ export function createSystemPromptHandler(
         const newPrompt = renderSystemPrompt(
             runtimePrompts,
             buildProtectedToolsExtension(config.compress.protectedTools),
-            !!state.manualMode,
+            isManualModeEnabled(state),
             state.isSubAgent && config.experimental.allowSubAgents,
         )
         if (output.system.length > 0) {
@@ -263,6 +269,7 @@ export function createCommandExecuteHandler(
                     throw new Error("__DCP_MANUAL_TRIGGER_BLOCKED__")
                 }
 
+                state.manualModeBeforeTrigger = isManualModeEnabled(state)
                 state.manualMode = "compress-pending"
                 state.pendingManualTrigger = {
                     sessionId: input.sessionID,

@@ -84,6 +84,7 @@ export function createSessionState(idFormat: IdFormat = "xml"): SessionState {
         sessionId: null,
         isSubAgent: false,
         manualMode: false,
+        manualModeBeforeTrigger: false,
         compressPermission: undefined,
         pendingManualTrigger: null,
         prune: {
@@ -124,6 +125,7 @@ export function resetSessionState(state: SessionState): void {
     state.sessionId = null
     state.isSubAgent = false
     state.manualMode = false
+    state.manualModeBeforeTrigger = false
     state.compressPermission = undefined
     state.pendingManualTrigger = null
     state.prune = {

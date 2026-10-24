@@ -10,6 +10,7 @@ import {
     createSessionState,
     ensureSessionInitialized,
     checkSession,
+    isManualModeEnabled,
     saveSessionState,
     syncToolCache,
     type SessionState,
@@ -482,7 +483,7 @@ export async function setup(ctx: Plugin.Context) {
                     const { state, messages } = await load(sessionID)
                     syncCompressionBlocks(state, logger, messages)
                     return {
-                        manualMode: !!state.manualMode,
+                        manualMode: isManualModeEnabled(state),
                         canCompress:
                             state.compressPermission === "allow" &&
                             (!state.isSubAgent || config.experimental.allowSubAgents),

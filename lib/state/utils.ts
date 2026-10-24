@@ -350,3 +350,14 @@ export function resetOnCompaction(state: SessionState): void {
     state.compressionTiming.startsByCallId.clear()
     state.compressionTiming.pendingByCallId.clear()
 }
+
+/**
+ * Whether the session is in manual mode. A pending /dcp-compress trigger is not manual mode by
+ * itself: it keeps whatever mode was active when the trigger was issued.
+ */
+export function isManualModeEnabled(state: SessionState): boolean {
+    if (state.manualMode === "compress-pending") {
+        return state.manualModeBeforeTrigger
+    }
+    return state.manualMode === "active"
+}
