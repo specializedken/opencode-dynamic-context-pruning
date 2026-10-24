@@ -23,6 +23,7 @@ import {
     removeDuplicateBlockPlaceholders,
     resolveRanges,
     validateArgs,
+    validateCompressesRawContent,
     validateNonOverlapping,
     validateSummaryPlaceholders,
 } from "./range-utils"
@@ -89,6 +90,7 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                 const prune = ctx.state.prune.messages
                 const resolvedPlans = await resolveRanges(input, searchContext, ctx.state)
                 validateNonOverlapping(resolvedPlans)
+                validateCompressesRawContent(resolvedPlans, ctx.state)
 
                 const notifications: NotificationEntry[] = []
                 const preparedPlans: Array<{

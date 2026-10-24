@@ -94,6 +94,34 @@ export async function resolveRanges(
     return plans
 }
 
+/**
+ * Rejects ranges that cover only content already inside active compressed blocks. Such a
+ * range removes nothing: every block is carried into the new summary verbatim, so it can
+ * only grow context and, when it starts at an early block, discard the cached prompt.
+ */
+export function validateCompressesRawContent(
+    plans: ResolvedRangeCompression[],
+    state: SessionState,
+): void {
+    const issues: string[] = []
+    for (const plan of plans) {
+        const hasRawMessage = plan.selection.messageIds.some(
+            (messageId) =>
+                (state.prune.messages.byMessageId.get(messageId)?.activeBlockIds.length ?? 0) === 0,
+        )
+        if (!hasRawMessage) {
+            issues.push(
+                `${plan.entry.startId}..${plan.entry.endId} only spans existing compressed blocks, so it would not shrink context. Compress raw messages instead, or leave these blocks as they are.`,
+            )
+        }
+    }
+    if (issues.length > 0) {
+        throw new Error(
+            issues.length === 1 ? issues[0] : issues.map((issue) => `- ${issue}`).join("\n"),
+        )
+    }
+}
+
 export function validateNonOverlapping(plans: ResolvedRangeCompression[]): void {
     const sortedPlans = [...plans].sort(
         (left, right) =>
