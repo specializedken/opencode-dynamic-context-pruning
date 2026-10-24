@@ -127,25 +127,36 @@ function stringifyToolContent(value: unknown): string {
 }
 
 const MEDIA_PAYLOAD_KEYS = new Set(["uri", "url", "data"])
+const MEDIA_PART_TYPES = new Set(["file", "media", "image"])
 
-// Structured tool results (V2) can carry media as data URIs. Providers bill an image at a
-// small fixed cost, so tokenizing its base64 as text inflated usage by hundreds of thousands
-// of tokens and triggered compression far below the configured limits. Keep only the
-// descriptive fields of media items; reported provider usage still covers their real cost.
+function isMediaPart(value: Record<string, unknown>): boolean {
+    return (
+        MEDIA_PART_TYPES.has(value.type as string) ||
+        typeof value.mime === "string" ||
+        typeof value.mediaType === "string"
+    )
+}
+
+// Structured tool results (V2) can carry media as data URIs, either as a content array
+// (session history) or nested in the result object, e.g. { type: "content", value: [...] }
+// (request view). Providers bill an image at a small fixed cost, so tokenizing its base64 as
+// text inflated usage by hundreds of thousands of tokens and triggered compression far below
+// the configured limits. Keep only the descriptive fields of media parts; reported provider
+// usage still covers their real cost. Other objects are walked but left untouched.
 function withoutMediaPayloads(value: unknown): unknown {
-    if (!Array.isArray(value)) {
+    if (Array.isArray(value)) {
+        return value.map(withoutMediaPayloads)
+    }
+    if (!value || typeof value !== "object") {
         return value
     }
-    return value.map((item) => {
-        if (!item || typeof item !== "object" || (item as { type?: unknown }).type === "text") {
-            return item
-        }
-        return Object.fromEntries(
-            Object.entries(item as Record<string, unknown>).filter(
-                ([key]) => !MEDIA_PAYLOAD_KEYS.has(key),
-            ),
-        )
-    })
+    const record = value as Record<string, unknown>
+    const media = isMediaPart(record)
+    return Object.fromEntries(
+        Object.entries(record)
+            .filter(([key]) => !(media && MEDIA_PAYLOAD_KEYS.has(key)))
+            .map(([key, item]) => [key, withoutMediaPayloads(item)]),
+    )
 }
 
 export function extractCompletedToolOutput(part: any): string | undefined {
