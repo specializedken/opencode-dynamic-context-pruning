@@ -265,17 +265,21 @@ export async function setup(ctx: Plugin.Context) {
             limits.set(`${model.providerID}/${model.id}`, model.limit.context)
     })
     async function contextLimit(model: { providerID: string; id: string }) {
-        served ??= (async () => {
+        const pending = (served ??= (async () => {
             const { data } = await ctx.model.list()
             return new Map(
                 data.map((info) => [`${info.providerID}/${info.id}`, info.limit.context]),
             )
-        })().catch((error) => {
-            logger.debug("V2 model list failed; using transform limits", { error: String(error) })
-            return limits
-        })
+        })())
         const key = `${model.providerID}/${model.id}`
-        return (await served).get(key) ?? limits.get(key)
+        try {
+            return (await pending).get(key) ?? limits.get(key)
+        } catch (error) {
+            // Do not cache the failure (e.g. host still starting): retry on the next request.
+            if (served === pending) served = undefined
+            logger.warn("V2 model list failed; using transform limits", { error: String(error) })
+            return limits.get(key)
+        }
     }
     for (const kind of ["context", "compaction"] as const)
         await ctx.session.hook(kind, (event) =>

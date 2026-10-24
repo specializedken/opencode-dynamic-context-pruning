@@ -130,3 +130,23 @@ test("v2 setup: percent limits use the served registry limit, not a pre-merge tr
         "75% of 229376 (172032) is above 160k",
     )
 })
+
+test("v2 setup: a failed model list is retried on the next request instead of cached", async () => {
+    let calls = 0
+    const harness = await boot(() => {
+        calls++
+        if (calls === 1) throw new Error("host still starting")
+        return [{ providerID: "local", id: "big", limit: { context: 1000000, output: 32768 } }]
+    })
+    harness.transform([
+        { providerID: "local", id: "big", limit: { context: 200000, output: 32000 } },
+    ])
+
+    // The failed lookup falls back to the transform snapshot (200k)...
+    assert.ok((await harness.request(`ses_limit_retry_a_${Date.now()}`, "big")).includes(MAX_NUDGE))
+    // ...and the next request asks the host again and gets the served 1M limit.
+    assert.ok(
+        !(await harness.request(`ses_limit_retry_b_${Date.now()}`, "big")).includes(MAX_NUDGE),
+    )
+    assert.equal(calls, 2)
+})
