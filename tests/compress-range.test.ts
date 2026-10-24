@@ -474,3 +474,64 @@ test("compress range execute rejects the captured string-content payload with gu
             err.message.includes("endId"),
     )
 })
+
+function rangeTool(sessionID: string, state = createSessionState()) {
+    const rawMessages = buildMessages(sessionID)
+    const tool = createCompressRangeTool({
+        client: {
+            session: {
+                messages: async () => ({ data: rawMessages }),
+                get: async () => ({ data: { parentID: "ses_parent" } }),
+            },
+        },
+        state,
+        logger: new Logger(false),
+        config: buildConfig(),
+        prompts: {
+            reload() {},
+            getRuntimePrompts() {
+                return { compressRange: "", compressMessage: "" }
+            },
+        },
+    } as any)
+    const run = (content: Array<{ startId: string; endId: string; summary: string }>, id: string) =>
+        tool.execute(
+            { topic: "Range", content },
+            { ask: async () => {}, metadata: () => {}, sessionID, messageID: id },
+        )
+    return { state, run }
+}
+
+test("compress range rejects a range that only spans existing blocks", async () => {
+    // Seen live: a local model merged @b1@..@b2@ (no raw messages) into a larger summary,
+    // growing context and discarding the cached prompt for no saving.
+    const { state, run } = rangeTool(`ses_range_blocks_only_${Date.now()}`)
+    await run(
+        [
+            { startId: "m0001", endId: "m0001", summary: "First block." },
+            { startId: "m0002", endId: "m0002", summary: "Second block." },
+        ],
+        "msg-compress-seed",
+    )
+    assert.equal(state.prune.messages.blocksById.size, 2)
+
+    await assert.rejects(
+        run([{ startId: "b1", endId: "b2", summary: "(b1) (b2) merged." }], "msg-compress-merge"),
+        /only spans existing compressed blocks, so it would not shrink context/,
+    )
+    assert.equal(state.prune.messages.blocksById.size, 2)
+    assert.deepEqual([...state.prune.messages.activeBlockIds].sort(), [1, 2])
+})
+
+test("compress range still accepts a range that spans a block and new raw messages", async () => {
+    const { state, run } = rangeTool(`ses_range_block_plus_raw_${Date.now()}`)
+    await run([{ startId: "m0001", endId: "m0001", summary: "First block." }], "msg-compress-1")
+
+    const result = await run(
+        [{ startId: "b1", endId: "m0002", summary: "(b1) plus the follow-up request." }],
+        "msg-compress-2",
+    )
+
+    assert.match(String(result), /^Compressed \d+ messages/)
+    assert.deepEqual([...state.prune.messages.activeBlockIds], [2])
+})

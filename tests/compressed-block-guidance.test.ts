@@ -42,7 +42,7 @@ function seedBlocks(state: SessionState, sizes: Array<[number, number]>): void {
     }
 }
 
-test("block guidance lists per-block token cost, total, and the merge hint", () => {
+test("block guidance explains that spanning a block never shrinks it", () => {
     const state = createSessionState()
     seedBlocks(state, [
         [1, 3200],
@@ -53,17 +53,20 @@ test("block guidance lists per-block token cost, total, and the merge hint", () 
     const guidance = buildCompressedBlockGuidance(state)
 
     assert.match(guidance, /Active compressed blocks in this session: 3 \(b1, b2, b3\)/)
-    assert.match(guidance, /- b3: ~8\.1k tokens/)
-    assert.match(guidance, /- b1: ~3\.2k tokens/)
-    assert.match(guidance, /- b2: ~450 tokens/)
-    assert.match(guidance, /Total held by block summaries: ~11\.8k tokens\./)
-    assert.match(guidance, /\(1\) DROP ranges no longer needed/)
-    assert.match(guidance, /\(2\) MERGE only content needed/)
-    assert.match(guidance, /\(3\) Leave anything uncertain alone\./)
-    const dropIndex = guidance.indexOf("(1) DROP")
-    const mergeIndex = guidance.indexOf("(2) MERGE")
-    assert.ok(dropIndex < mergeIndex, "drop rule must be listed before the merge rule")
-    assert.match(guidance, /reference each included block exactly once as `\(bN\)`/)
+    assert.match(guidance, /Prefer compressing closed raw messages after the latest block/)
+    assert.match(
+        guidance,
+        /does not shrink it: its summary is carried into the new summary verbatim/,
+    )
+    assert.match(
+        guidance,
+        /starts at an old block rewrites everything after it and discards the cached prompt/,
+    )
+    assert.match(guidance, /include each required placeholder exactly once/)
+    // Per-block costs and merge advice made models restart ranges at the first block
+    // (whole-prefix cache miss) expecting to shrink summaries, which cannot happen.
+    assert.doesNotMatch(guidance, /tokens/)
+    assert.doesNotMatch(guidance, /MERGE|merge/)
 })
 
 test("block guidance with no active blocks keeps the original shape", () => {
@@ -75,7 +78,7 @@ test("block guidance with no active blocks keeps the original shape", () => {
     assert.doesNotMatch(guidance, /merging blocks/)
 })
 
-test("manual trigger prompt exposes the occupancy guidance", () => {
+test("manual trigger prompt carries the block guidance without merge advice", () => {
     const state = createSessionState()
     seedBlocks(state, [[1, 5000]])
     const config = { compress: { mode: "range" } } as PluginConfig
@@ -83,8 +86,9 @@ test("manual trigger prompt exposes the occupancy guidance", () => {
     const prompt = getTriggerPrompt("compress", state, config)
 
     assert.match(prompt, /use the compress tool/)
-    assert.match(prompt, /- b1: ~5\.0k tokens/)
-    assert.match(prompt, /\(2\) MERGE only content needed/)
+    assert.match(prompt, /Active compressed blocks in this session: 1 \(b1\)/)
+    assert.match(prompt, /Prefer closed ranges of raw messages/)
+    assert.doesNotMatch(prompt, /MERGE/)
 })
 
 test("message occupancy guidance names the largest uncompressed messages", () => {
@@ -248,15 +252,14 @@ test("block guidance ignores active ids missing from blocksById", () => {
     assert.doesNotMatch(guidance, /b9/)
 })
 
-test("manual trigger prompt carries the merge caveat", () => {
+test("manual trigger prompt says spanning a block does not shrink it", () => {
     const state = createSessionState()
     seedBlocks(state, [[1, 5000]])
     const config = { compress: { mode: "range" } } as PluginConfig
 
     const prompt = getTriggerPrompt("compress", state, config)
 
-    assert.match(prompt, /Merge caveat/)
-    assert.match(prompt, /merged blocks can no longer be re-compressed or decompressed separately/)
+    assert.match(prompt, /does not shrink it/)
 })
 
 function toolMessage(id: string, callID: string, tool: string, output: string) {
@@ -334,12 +337,11 @@ test("manual trigger does not give V2 native compaction entries a message ref", 
     assert.equal(state.messageIds.byRawId.get("msg-after"), "m0001")
 })
 
-test("merge caveat does not claim compressed blocks can be dropped", () => {
+test("block guidance does not claim compressed blocks can be dropped", () => {
     const state = createSessionState()
     seedBlocks(state, [[1, 5000]])
 
     const guidance = buildCompressedBlockGuidance(state)
 
-    assert.match(guidance, /can no longer be re-compressed or decompressed separately/)
-    assert.doesNotMatch(guidance, /droppable|be dropped/)
+    assert.doesNotMatch(guidance, /droppable|be dropped|DROP/)
 })
