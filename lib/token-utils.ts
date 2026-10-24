@@ -127,25 +127,49 @@ function stringifyToolContent(value: unknown): string {
 }
 
 const MEDIA_PAYLOAD_KEYS = new Set(["uri", "url", "data"])
+const MEDIA_PART_TYPES = new Set(["file", "media", "image"])
 
-// Structured tool results (V2) can carry media as data URIs. Providers bill an image at a
-// small fixed cost, so tokenizing its base64 as text inflated usage by hundreds of thousands
-// of tokens and triggered compression far below the configured limits. Keep only the
-// descriptive fields of media items; reported provider usage still covers their real cost.
-function withoutMediaPayloads(value: unknown): unknown {
-    if (!Array.isArray(value)) {
-        return value
+function withoutPayload(item: unknown): unknown {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return item
     }
-    return value.map((item) => {
-        if (!item || typeof item !== "object" || (item as { type?: unknown }).type === "text") {
-            return item
-        }
-        return Object.fromEntries(
-            Object.entries(item as Record<string, unknown>).filter(
-                ([key]) => !MEDIA_PAYLOAD_KEYS.has(key),
-            ),
-        )
-    })
+    const record = item as Record<string, unknown>
+    const isMedia =
+        MEDIA_PART_TYPES.has(record.type as string) ||
+        typeof record.mime === "string" ||
+        typeof record.mediaType === "string"
+    if (!isMedia) {
+        return item
+    }
+    return Object.fromEntries(
+        Object.entries(record).filter(([key]) => !MEDIA_PAYLOAD_KEYS.has(key)),
+    )
+}
+
+// V2 tool results can carry media as data URIs in exactly two shapes: a content array
+// (session history) and { type: "content", value: [...] } (request view). Providers send those
+// parts as media and bill an image at a small fixed cost, so tokenizing the base64 as text
+// inflated usage by hundreds of thousands of tokens. Strip payloads from media parts in those
+// two places only: json/text/error results are sent as text and must be counted as they are.
+function withoutMediaPayloads(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(withoutPayload)
+    }
+    const record = value as { type?: unknown; value?: unknown } | null
+    if (
+        record &&
+        typeof record === "object" &&
+        record.type === "content" &&
+        Array.isArray(record.value)
+    ) {
+        return { ...record, value: record.value.map(withoutPayload) }
+    }
+    return value
+}
+
+/** Text form of a tool output as the model receives it, with media payloads left out. */
+export function stringifyToolOutput(output: unknown): string {
+    return stringifyToolContent(withoutMediaPayloads(output))
 }
 
 export function extractCompletedToolOutput(part: any): string | undefined {
@@ -161,7 +185,7 @@ export function extractCompletedToolOutput(part: any): string | undefined {
         return COMPACTED_TOOL_OUTPUT_PLACEHOLDER
     }
 
-    return stringifyToolContent(withoutMediaPayloads(part.state.output))
+    return stringifyToolOutput(part.state.output)
 }
 
 export function extractToolContent(part: any): string[] {

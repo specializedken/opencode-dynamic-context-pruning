@@ -232,3 +232,63 @@ test("V2 inserts summaries after native checkpoints without an ordinary user mes
     assert.deepEqual(restored[0], native[0])
     assert.deepEqual(restored[1]?.content, [{ type: "text", text: "CHECKPOINT_SUMMARY" }])
 })
+
+test("V2 request view does not count tool-result media payloads as text tokens", async () => {
+    // The first media fix only handled the history() array shape; project() keeps the whole
+    // result object ({ type: "content", value: [...] }), so screenshots still inflated usage
+    // on the live request path and kept compression reminders firing below the min limit.
+    const { countAllMessageTokens } = await import("../lib/token-utils")
+    const base64 = "iVBORw0KGgo".repeat(30000)
+    const native = [
+        { id: "msg_user", role: "user", content: [{ type: "text", text: "Take a screenshot" }] },
+        {
+            id: "msg_assistant",
+            role: "assistant",
+            content: [
+                { type: "tool-call", id: "call_shot", name: "read", input: { path: "a.png" } },
+            ],
+        },
+        {
+            role: "tool",
+            content: [
+                {
+                    type: "tool-result",
+                    id: "call_shot",
+                    name: "read",
+                    result: {
+                        type: "content",
+                        value: [
+                            { type: "text", text: "Image read successfully" },
+                            {
+                                type: "file",
+                                uri: `data:image/png;base64,${base64}`,
+                                mime: "image/png",
+                            },
+                        ],
+                    },
+                },
+            ],
+        },
+    ] as Message[]
+
+    const view = project(native, entries(native), session)
+    const assistant = view.messages.find((message) => message.info.id === "msg_assistant")!
+    const tool = assistant.parts.find((part) => part.type === "tool") as any
+
+    assert.equal(tool.state.status, "completed")
+    assert.ok(
+        (await countAllMessageTokens(assistant)) < 300,
+        "screenshot base64 must not be counted",
+    )
+    // The request itself is untouched: the projection still restores the original payload.
+    assert.match(JSON.stringify(view.restore()), /iVBORw0KGgo/)
+})
+
+test("media stripping leaves ordinary JSON tool output with a data field alone", async () => {
+    const { extractCompletedToolOutput } = await import("../lib/token-utils")
+    const output = extractCompletedToolOutput({
+        type: "tool",
+        state: { status: "completed", output: { type: "json", data: { rows: [1, 2, 3] } } },
+    })
+    assert.equal(output, JSON.stringify({ type: "json", data: { rows: [1, 2, 3] } }))
+})

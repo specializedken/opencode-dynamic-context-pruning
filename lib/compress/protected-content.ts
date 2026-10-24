@@ -9,6 +9,7 @@ import {
 import { fetchSessionMessages } from "./search"
 import type { SearchContext, SelectionResolution } from "./types"
 import { toolOccurrenceKey } from "../tool-ids"
+import { stringifyToolOutput } from "../token-utils"
 
 export function appendProtectedUserMessages(
     summary: string,
@@ -141,10 +142,7 @@ export async function appendProtectedTools(
                     let output = ""
 
                     if (part.state?.status === "completed" && part.state?.output) {
-                        output =
-                            typeof part.state.output === "string"
-                                ? part.state.output
-                                : JSON.stringify(part.state.output)
+                        output = stringifyToolOutput(part.state.output)
                     }
 
                     if (
