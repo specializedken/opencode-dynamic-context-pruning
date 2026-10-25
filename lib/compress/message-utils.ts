@@ -2,6 +2,7 @@ import type { PluginConfig } from "../config"
 import type { SessionState } from "../state"
 import { parseBoundaryId, type IdFormat } from "../message-ids"
 import { isIgnoredUserMessage, isProtectedUserMessage } from "../messages/query"
+import { isCompressInputStub } from "./input-stub"
 import { NON_EMPTY_ARRAY_ERROR_MESSAGE, isStringFields, normalizeCompressArgs } from "./args"
 import { resolveAnchorMessageId, resolveBoundaryIds, resolveSelection } from "./search"
 import { COMPRESSED_BLOCK_HEADER } from "./state"
@@ -72,6 +73,12 @@ export function validateArgs(args: CompressMessageToolArgs): void {
 
         if (typeof entry?.summary !== "string" || entry.summary.trim().length === 0) {
             throw new Error(`${prefix}.summary is required and must be a non-empty string`)
+        }
+
+        if (isCompressInputStub(entry.summary)) {
+            throw new Error(
+                `${prefix}.summary is the placeholder DCP leaves in earlier compress calls; write the full technical summary for this message`,
+            )
         }
     }
 }

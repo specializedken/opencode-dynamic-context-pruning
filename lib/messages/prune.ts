@@ -7,6 +7,7 @@ import { getLastUserMessage } from "./query"
 import type { UserMessage } from "@opencode-ai/sdk/v2"
 import { formatBlockRef } from "../message-ids"
 import { getAmbiguousToolIds } from "../tool-ids"
+import { stubCompressCallInputs } from "../compress/input-stub"
 
 const PRUNED_TOOL_OUTPUT_REPLACEMENT =
     "[Output removed to save context - information superseded or no longer needed]"
@@ -23,6 +24,9 @@ export const prune = (
     // Legacy persisted call IDs must not remove multiple tool occurrences.
     for (const id of getAmbiguousToolIds(messages)) state.prune.tools.delete(id)
     filterCompressedRanges(state, logger, config, messages, summaryBase)
+    // Runs where blocks are applied: the request already changes at the block anchor,
+    // which precedes the compress call, so stubbing its input costs no extra cache.
+    stubCompressCallInputs(state, messages)
     // pruneFullTool(state, logger, messages)
     pruneToolOutputs(state, logger, messages)
     pruneToolInputs(state, logger, messages)

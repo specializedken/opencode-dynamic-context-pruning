@@ -2,6 +2,7 @@ import type { SessionState, WithParts } from "../state"
 import type { Logger } from "../logger"
 import { messageHasCompress } from "../messages/query"
 import { countTokens } from "../token-utils"
+import { isCompressInputStub } from "./input-stub"
 import {
     buildSearchContext,
     resolveAnchorMessageId,
@@ -56,7 +57,8 @@ function extractCompressResults(messages: WithParts[]): CompressToolResult[] {
                 if (
                     typeof entry.startId === "string" &&
                     typeof entry.endId === "string" &&
-                    typeof entry.summary === "string"
+                    typeof entry.summary === "string" &&
+                    !isCompressInputStub(entry.summary)
                 ) {
                     ranges.push({
                         startId: entry.startId,

@@ -482,3 +482,19 @@ test("reconstructFromHistory returns 0 when no compress results exist", async ()
     assert.equal(reconstructed, 0)
     assert.equal(state.prune.messages.blocksById.size, 0)
 })
+
+test("reconstructFromHistory skips compress entries whose summary is a DCP input stub", async () => {
+    const { formatCompressInputStub } = await import("../lib/compress/input-stub")
+    const sessionID = "ses_fork_reconstruct_stub"
+    const messages = buildForkedSessionMessages(sessionID)
+    const tool = messages[3]!.parts[1] as any
+    tool.state.input.content[0].summary = formatCompressInputStub(1, "xml")
+    const state = createSessionState()
+    state.sessionId = sessionID
+    assignMessageRefs(state, messages)
+
+    const reconstructed = await reconstructFromHistory(state, new Logger(false), messages)
+
+    assert.equal(reconstructed, 0)
+    assert.equal(state.prune.messages.blocksById.size, 0)
+})
