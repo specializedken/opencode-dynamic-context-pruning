@@ -260,7 +260,7 @@ test("V1 shape: the stub uses the xml block ref and leaves the cached raw input 
         summary,
     })
 
-    stubCompressCallInputs(state, messages)
+    stubAll(state, messages)
 
     const stub = (messages[0]!.parts[0] as any).state.input.content[0].summary
     assert.equal(stub, "[DCP: summary stored in compressed block b1]")
@@ -275,7 +275,7 @@ test("stubbing is deterministic and idempotent", () => {
     const second = basicRequest(basicNative(summary))
     assert.equal(JSON.stringify(first.restored), JSON.stringify(second.restored))
 
-    stubCompressCallInputs(first.state, first.view.messages)
+    stubAll(first.state, first.view.messages)
     assert.equal(JSON.stringify(first.view.restore()), JSON.stringify(first.restored))
 })
 
@@ -341,6 +341,11 @@ function withBlocks(...blocks: CompressionBlock[]): SessionState {
     return state
 }
 
+// Direct calls treat every block in state as rendered; prune() passes the real set.
+function stubAll(state: SessionState, messages: WithParts[]): void {
+    stubCompressCallInputs(state, messages, new Set(state.prune.messages.blocksById.keys()))
+}
+
 function summaries(messages: WithParts[], index = 0): unknown[] {
     const input = (messages[0]!.parts[index] as any).state.input
     return input.content.map((entry: any) => entry.summary)
@@ -360,7 +365,7 @@ test("several ranges in one call each get their own block, matched by trimmed bo
         block(5, { startId: "@6@", endId: "@9@" }),
         block(4, { startId: "@3@", endId: "@4@" }),
     )
-    stubCompressCallInputs(state, messages)
+    stubAll(state, messages)
     assert.deepEqual(summaries(messages), [
         formatCompressInputStub(4, "compact"),
         formatCompressInputStub(5, "compact"),
@@ -383,7 +388,7 @@ test("message mode stubs matched entries and leaves skipped ones verbatim", () =
         block(1, { mode: "message", startId: "@3@" }),
         block(2, { mode: "message", startId: "@5@" }),
     )
-    stubCompressCallInputs(state, messages)
+    stubAll(state, messages)
     assert.deepEqual(summaries(messages), [
         formatCompressInputStub(1, "compact"),
         formatCompressInputStub(2, "compact"),
@@ -399,7 +404,7 @@ test("message mode stubs matched entries and leaves skipped ones verbatim", () =
             ],
         }),
     )
-    stubCompressCallInputs(withBlocks(block(1, { mode: "message", startId: "@3@" })), duplicate)
+    stubAll(withBlocks(block(1, { mode: "message", startId: "@3@" })), duplicate)
     assert.deepEqual(summaries(duplicate), [formatCompressInputStub(1, "compact"), "duplicate"])
 })
 
@@ -407,71 +412,140 @@ test("only finished compress calls with a block are stubbed", () => {
     const input = () => ({ topic: "t", content: [{ startId: "@3@", endId: "@4@", summary: "S" }] })
 
     const errored = v1Message(v1Call("call_1", input(), "error"))
-    stubCompressCallInputs(withBlocks(), errored)
+    stubAll(withBlocks(), errored)
     assert.deepEqual(summaries(errored), ["S"])
-    stubCompressCallInputs(withBlocks(block(9, { startId: "@1@", endId: "@2@" })), errored)
+    stubAll(withBlocks(block(9, { startId: "@1@", endId: "@2@" })), errored)
     assert.deepEqual(summaries(errored), ["S"])
 
     for (const status of ["running", "pending"] as const) {
         const live = v1Message(v1Call("call_1", input(), status))
-        stubCompressCallInputs(withBlocks(block(1, { startId: "@3@", endId: "@4@" })), live)
+        stubAll(withBlocks(block(1, { startId: "@3@", endId: "@4@" })), live)
         assert.deepEqual(summaries(live), ["S"])
     }
 
     // The block was applied but finishing the call threw: its summary is still in the block.
     const appliedThenFailed = v1Message(v1Call("call_1", input(), "error"))
-    stubCompressCallInputs(
-        withBlocks(block(1, { startId: "@3@", endId: "@4@" })),
-        appliedThenFailed,
-    )
+    stubAll(withBlocks(block(1, { startId: "@3@", endId: "@4@" })), appliedThenFailed)
     assert.deepEqual(summaries(appliedThenFailed), [formatCompressInputStub(1, "compact")])
 })
 
-test("the call message bytes do not depend on block liveness", () => {
+function firstDiff(before: Message[], after: Message[]): number {
+    let index = 0
+    while (
+        index < before.length &&
+        index < after.length &&
+        JSON.stringify(before[index]) === JSON.stringify(after[index])
+    )
+        index++
+    return index
+}
+
+function syncedRequest(
+    state: SessionState,
+    native: Message[],
+): { restored: Message[]; view: ReturnType<typeof project> } {
+    const view = project(native, entries(native), session)
+    syncCompressionBlocks(state, logger, view.messages)
+    prune(state, logger, makeConfig(), view.messages, view.summaryBase)
+    return { restored: view.restore(), view }
+}
+
+test("a call is stubbed only while its block's summary is in the request", () => {
     const summary = filler(2000, "SENTINEL_live")
-    const callBytes = (configure?: (state: SessionState) => void) =>
-        JSON.stringify(callOf(basicRequest(basicNative(summary), configure).restored).message)
-
-    const active = callBytes()
-    assert.match(active, /@b1@/)
-    assert.equal(
-        callBytes((state) => {
-            const item = state.prune.messages.blocksById.get(1)!
-            item.active = false
-            item.deactivatedByBlockId = 7
-            state.prune.messages.activeBlockIds.delete(1)
-            state.prune.messages.activeByAnchorMessageId.delete("msg_u1")
-            state.prune.messages.byMessageId.forEach((entry) => (entry.activeBlockIds = []))
-        }),
-        active,
-    )
-    const toggled = (deactivated: boolean) =>
-        callBytes((state) => {
-            state.prune.messages.blocksById.get(1)!.deactivatedByUser = deactivated
-            const native = basicNative(summary)
-            syncCompressionBlocks(state, logger, project(native, entries(native), session).messages)
-        })
-    assert.equal(toggled(true), active)
-    assert.equal(toggled(false), active)
-    assert.equal(
-        callBytes((state) => {
-            state.prune.messages.blocksById.get(1)!.anchorMessageId = "msg_gone"
-        }),
-        active,
-    )
-
-    // Decompress then recompress on one live state never changes the call message.
     const native = basicNative(summary)
-    const { state } = basicRequest(native)
-    const seen = new Set<string>()
-    for (const deactivated of [true, false, true, false]) {
-        state.prune.messages.blocksById.get(1)!.deactivatedByUser = deactivated
-        syncCompressionBlocks(state, logger, project(native, entries(native), session).messages)
-        const view = project(native, entries(native), session)
-        prune(state, logger, makeConfig(), view.messages, view.summaryBase)
-        seen.add(JSON.stringify(callOf(view.restore()).message))
-    }
-    assert.deepEqual([...seen], [active])
+    const { state, restored: active } = basicRequest(native)
+    const stubbed = JSON.stringify(callOf(active).message)
+    assert.match(stubbed, /@b1@/)
+    assert.equal(occurrences(JSON.stringify(active), "SENTINEL_live"), 1)
+
+    // Decompressed: the raw input comes back, and the request already changed before it.
+    state.prune.messages.blocksById.get(1)!.deactivatedByUser = true
+    const decompressed = syncedRequest(state, native).restored
+    assert.doesNotMatch(JSON.stringify(callOf(decompressed).message), /@b1@/)
+    assert.equal(occurrences(JSON.stringify(decompressed), "SENTINEL_live"), 1)
+    const callIndex = decompressed.findIndex((message) => message.id === "msg_c1")
+    assert.ok(firstDiff(active, decompressed) < callIndex - 1)
+
+    // Recompressed: the stub returns with the same bytes.
+    state.prune.messages.blocksById.get(1)!.deactivatedByUser = false
+    assert.equal(JSON.stringify(callOf(syncedRequest(state, native).restored).message), stubbed)
+
+    // Consumed by a block that is rendered: the summary is nested in it, so the stub stays.
+    const consumer = createSessionState("compact")
+    applyBlock(consumer, {
+        startId: "@1@",
+        endId: "@2@",
+        anchor: "msg_u1",
+        messageIds: ["msg_u1", "msg_a1"],
+        compressMessageId: "msg_c1",
+        compressCallId: "call_c1",
+        summary: `[Compressed conversation section]\n${summary}`,
+    })
+    applyBlock(consumer, {
+        startId: "@1@",
+        endId: "@3@",
+        anchor: "msg_u1",
+        messageIds: ["msg_u1", "msg_a1", "msg_u2"],
+        compressMessageId: "msg_c2",
+        compressCallId: "call_c2",
+        summary: `[Compressed conversation section]\nouter\n${summary}`,
+        consumed: [1],
+    })
+    const nested = syncedRequest(consumer, native).restored
+    assert.equal(consumer.prune.messages.blocksById.get(1)!.active, false)
+    assert.equal(JSON.stringify(callOf(nested).message), stubbed)
+    assert.equal(occurrences(JSON.stringify(nested), "SENTINEL_live"), 1)
+})
+
+test("native compaction keeping the call but not the anchor leaves the input raw", () => {
+    const summary = filler(2000, "SENTINEL_tail")
+    const native = basicNative(summary)
+    const { state, restored: full } = basicRequest(native)
+    assert.match(JSON.stringify(callOf(full).message), /@b1@/)
+
+    // The kept tail starts at the compress call: anchor msg_u1 and the range are gone.
+    const tail = native.slice(3)
+    const first = syncedRequest(state, tail).restored
+    assert.equal(state.prune.messages.blocksById.get(1)!.active, true)
+    const { call } = callOf(first)
+    assert.equal(call.input.content[0].summary, summary)
+    assert.equal(occurrences(JSON.stringify(first), "SENTINEL_tail"), 1)
+
+    // Stable across later requests on the same tail.
+    tail.push(assistant("msg_a9", "Done."))
+    const next = syncedRequest(state, tail).restored
+    assert.equal(firstDiff(first, next), first.length)
+})
+
+test("a consumed block whose consumer is not rendered keeps its raw input", () => {
+    const summary = filler(1200, "SENTINEL_orphan")
+    const native = basicNative(summary)
+    const state = createSessionState("compact")
+    applyBlock(state, {
+        startId: "@1@",
+        endId: "@2@",
+        anchor: "msg_u1",
+        messageIds: ["msg_u1", "msg_a1"],
+        compressMessageId: "msg_c1",
+        compressCallId: "call_c1",
+        summary: `[Compressed conversation section]\n${summary}`,
+    })
+    // The consumer's origin message is in the window but its anchor is not, so sync keeps it
+    // active, it retires b1, and neither summary is rendered.
+    applyBlock(state, {
+        startId: "@0@",
+        endId: "@2@",
+        anchor: "msg_gone",
+        messageIds: ["msg_gone", "msg_u1", "msg_a1"],
+        compressMessageId: "msg_u3",
+        compressCallId: "call_c2",
+        summary: `[Compressed conversation section]\nouter\n${summary}`,
+        consumed: [1],
+    })
+    const restored = syncedRequest(state, native).restored
+    assert.equal(state.prune.messages.blocksById.get(1)!.active, false)
+    assert.equal(callOf(restored).call.input.content[0].summary, summary)
+    assert.equal(occurrences(JSON.stringify(restored), "SENTINEL_orphan"), 1)
 })
 
 test("without a block in state the compress input stays raw", () => {
@@ -489,36 +563,24 @@ test("call id fallbacks only apply when the compress part is unambiguous", () =>
     })
 
     const legacy = v1Message(v1Call("call_1", input("@3@")))
-    stubCompressCallInputs(
-        withBlocks(block(1, { startId: "@3@", compressCallId: undefined })),
-        legacy,
-    )
+    stubAll(withBlocks(block(1, { startId: "@3@", compressCallId: undefined })), legacy)
     assert.deepEqual(summaries(legacy), [formatCompressInputStub(1, "compact")])
 
     const ambiguous = v1Message(v1Call("call_1", input("@3@")), v1Call("call_2", input("@3@")))
-    stubCompressCallInputs(
-        withBlocks(block(1, { startId: "@3@", compressCallId: undefined })),
-        ambiguous,
-    )
+    stubAll(withBlocks(block(1, { startId: "@3@", compressCallId: undefined })), ambiguous)
     assert.deepEqual(summaries(ambiguous, 0), ["S@3@"])
     assert.deepEqual(summaries(ambiguous, 1), ["S@3@"])
 
     const mismatch = v1Message(v1Call("call_host", input("@3@")))
-    stubCompressCallInputs(
-        withBlocks(block(1, { startId: "@3@", compressCallId: "ctx" })),
-        mismatch,
-    )
+    stubAll(withBlocks(block(1, { startId: "@3@", compressCallId: "ctx" })), mismatch)
     assert.deepEqual(summaries(mismatch), [formatCompressInputStub(1, "compact")])
 
     const otherMessage = v1Message(v1Call("call_1", input("@3@")))
-    stubCompressCallInputs(
-        withBlocks(block(1, { startId: "@3@", compressMessageId: "msg_other" })),
-        otherMessage,
-    )
+    stubAll(withBlocks(block(1, { startId: "@3@", compressMessageId: "msg_other" })), otherMessage)
     assert.deepEqual(summaries(otherMessage), ["S@3@"])
 
     const two = v1Message(v1Call("call_1", input("@3@")), v1Call("call_2", input("@5@")))
-    stubCompressCallInputs(
+    stubAll(
         withBlocks(
             block(1, { startId: "@3@", compressCallId: "call_1" }),
             block(2, { startId: "@5@", compressCallId: "call_2" }),
@@ -529,7 +591,7 @@ test("call id fallbacks only apply when the compress part is unambiguous", () =>
     assert.deepEqual(summaries(two, 1), [formatCompressInputStub(2, "compact")])
 })
 
-test("content sent as a JSON string stays a string with stubbed summaries", () => {
+test("content sent as a JSON string or a single object keeps its shape when stubbed", () => {
     const blocks = [block(1, { startId: "@3@", endId: "@4@" }), block(2, { startId: "@6@" })]
     const asArray = {
         topic: "t",
@@ -556,6 +618,17 @@ test("content sent as a JSON string stays a string with stubbed summaries", () =
             summary: formatCompressInputStub(1, "compact"),
         }),
     )
+
+    // A single entry object (accepted by coerceContentArray) is stubbed and stays an object.
+    const object = { topic: "t", content: { startId: "@3@", endId: "@4@", summary: "one" } }
+    assert.equal(normalizeRangeArgs(object).content.length, 1)
+    const objectNext = stubbedCompressInput(object, blocks, "compact") as any
+    assert.deepEqual(objectNext, {
+        topic: "t",
+        content: { startId: "@3@", endId: "@4@", summary: formatCompressInputStub(1, "compact") },
+    })
+    assert.equal(object.content.summary, "one")
+    assert.ok(isCompressInputStub(normalizeRangeArgs(objectNext).content[0]!.summary))
 
     assert.equal(
         stubbedCompressInput({ topic: "t", content: "[not json" }, blocks, "compact"),

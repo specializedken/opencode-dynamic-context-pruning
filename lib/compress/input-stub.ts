@@ -6,10 +6,16 @@ import { formatBlockRef, parseBoundaryId, type IdFormat } from "../message-ids"
  * rendered again as the compressed block. Once a block exists, the call's copy is replaced
  * with a short pointer to the block, so each summary is sent once.
  *
- * Cache stability: a stub first appears on the request where its block is first applied.
- * That request already changes at the block's anchor (the range start), which always comes
- * before the call message. After that the stub depends only on the block id and the host's
- * ID format, and block liveness is ignored, so the call message never changes again.
+ * A call is stubbed only while its block's summary is actually in the request: rendered at
+ * its anchor, or nested inside a rendered block that consumed it. Otherwise (decompressed,
+ * or an anchor dropped by native compaction while the call message survived) the raw input
+ * is the only copy of the summary left, so it stays verbatim.
+ *
+ * Cache stability: whether a block's summary is rendered only changes together with the
+ * request at or before that block's anchor (the range start, or the consuming block's
+ * anchor, which comes earlier still), and the anchor always precedes the call message. So
+ * a stub never appears or disappears without an earlier change in the same request, and
+ * between such changes it depends only on the block id and the host's ID format.
  *
  * The stub must not contain `(bN)` or `{block_N}`: those are block placeholders that range
  * mode expands.
@@ -112,22 +118,54 @@ export function stubbedCompressInput(
         }
     }
 
+    if (isPlainObject(content)) {
+        // A single entry object is accepted too (see coerceContentArray). Keep it an object.
+        const result = stubEntries([content], candidates, format)
+        return result.changed ? { ...input, content: result.entries[0] } : undefined
+    }
+
     return undefined
 }
 
 /**
- * Replaces the summary payload of every compress call whose block is known with a stub.
+ * The blocks whose summary text is in the request: the ones rendered at their anchor, plus
+ * every block they consumed (range mode nests a consumed summary in its consumer's text),
+ * transitively.
+ */
+export function withConsumedBlocks(
+    state: SessionState,
+    renderedBlockIds: Iterable<number>,
+): Set<number> {
+    const blocksById = state.prune.messages.blocksById
+    const result = new Set<number>()
+    const pending = [...renderedBlockIds]
+    while (pending.length > 0) {
+        const blockId = pending.pop()!
+        if (result.has(blockId)) continue
+        result.add(blockId)
+        const consumed = blocksById.get(blockId)?.consumedBlockIds
+        if (Array.isArray(consumed)) pending.push(...consumed)
+    }
+    return result
+}
+
+/**
+ * Replaces the summary payload of every compress call whose block summary is in this
+ * request (`summaryBlockIds`, see withConsumedBlocks) with a stub.
  * Runs on the per-request message copy only; history and persisted state are untouched.
  */
-export function stubCompressCallInputs(state: SessionState, messages: WithParts[]): void {
+export function stubCompressCallInputs(
+    state: SessionState,
+    messages: WithParts[],
+    summaryBlockIds: ReadonlySet<number>,
+): void {
     const blocksById = state.prune.messages.blocksById
-    if (blocksById.size === 0) return
+    if (blocksById.size === 0 || summaryBlockIds.size === 0) return
 
-    // Every block counts, active or not, so the stub never flips when a block is consumed,
-    // decompressed or recompressed.
     const byMessage = new Map<string, CompressionBlock[]>()
     for (const block of blocksById.values()) {
         if (!block || typeof block.compressMessageId !== "string") continue
+        if (!summaryBlockIds.has(block.blockId)) continue
         const list = byMessage.get(block.compressMessageId)
         if (list) list.push(block)
         else byMessage.set(block.compressMessageId, [block])
