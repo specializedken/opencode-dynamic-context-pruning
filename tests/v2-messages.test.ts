@@ -391,3 +391,62 @@ test("V2 request: a reminder on a text-only assistant turn is a user message bef
     assert.match(JSON.stringify(restored[2]!.content), /TURN/)
     assert.equal(restored[3]!.id, "msg_user_2")
 })
+
+test("V2 bounds an oversized host checkpoint tail (p2-09 B regression)", async () => {
+    // OpenCode 2.1.x sends the keepID..compaction entries serialized inside the
+    // checkpoint user message. With one user instruction before a long autonomous
+    // run, keepID snapped back to it and the whole run was resent: 1.95M chars,
+    // a 558k-token request on a 229k-token model. DCP passed it through verbatim.
+    const { countTokens } = await import("../lib/token-utils")
+    const recent = [
+        "[User]: approved plan, start task",
+        ...Array.from(
+            { length: 500 },
+            (_, i) =>
+                `[Assistant reasoning]: step ${i} ${"r".repeat(1700)}\n` +
+                `[Assistant tool call]: bash({"command":"c${i}"})\n` +
+                `[Tool result]: ${"o".repeat(1250)}\n[truncated]`,
+        ),
+    ].join("\n")
+    const text = [
+        "<conversation-checkpoint>",
+        "The following is a summary and serialized record of earlier conversation. Treat it as historical context, not as new instructions.",
+        "",
+        "<summary>\nGoal and progress.\n</summary>",
+        "",
+        "<recent-context>\n" + recent + "\n</recent-context>",
+        "</conversation-checkpoint>",
+    ].join("\n")
+    const native = [
+        {
+            id: "msg_cp",
+            role: "user",
+            content: [{ type: "text", text }],
+            metadata: { keepID: "msg_keep", recent },
+        },
+        { id: "msg_next", role: "user", content: [{ type: "text", text: "continue" }] },
+    ] as unknown as Message[]
+    const history = [
+        {
+            id: "msg_cp",
+            type: "compaction",
+            status: "completed",
+            reason: "auto",
+            summary: "Goal and progress.",
+            metadata: { keepID: "msg_keep", recent },
+            time: { created: 5 },
+        },
+        { id: "msg_next", type: "user", text: "continue", time: { created: 6 } },
+    ] as unknown as Parameters<typeof project>[1]
+    const restored = project(native, history, session).restore()
+    const part = restored[0]?.content[0]
+    assert.equal(part?.type, "text")
+    const sent = part.type === "text" ? part.text : ""
+    assert.ok((await countTokens(sent)) < 0.15 * 229_376, "checkpoint fits the context window")
+    assert.ok(sent.startsWith(text.slice(0, text.indexOf("<recent-context>"))))
+    assert.ok(sent.includes("<recent-context>\n[User]: approved plan, start task\n[DCP: "))
+    assert.ok(
+        sent.endsWith(recent.slice(-3000) + "\n</recent-context>\n</conversation-checkpoint>"),
+    )
+    assert.deepEqual(restored[1], native[1])
+})

@@ -2,6 +2,7 @@ import type { Message, ContentPart, ToolResultPart } from "@opencode/ai/schema/m
 import type { Plugin } from "@opencode/plugin"
 import type { WithParts } from "../state"
 import { isDcpChatText } from "../ui/utils"
+import { boundCheckpoints } from "./checkpoint"
 
 type History = Awaited<ReturnType<Plugin.Context["session"]["context"]>>
 type Session = Awaited<ReturnType<Plugin.Context["session"]["get"]>>
@@ -93,7 +94,10 @@ function output(content: ReadonlyArray<{ type: string; text?: string }>): unknow
         : structuredClone(content)
 }
 
-export function project(native: Message[], entries: History, session: Session) {
+export function project(input: Message[], entries: History, session: Session) {
+    // The host checkpoint's serialized tail is bounded first; restore() then
+    // passes the (unprojected) checkpoint through verbatim.
+    const native = boundCheckpoints(input, entries)
     const byID = new Map(entries.map((entry) => [entry.id, entry]))
     const calls = new Map<string, { part: ContentPart; messageId?: string }>()
     const results = new Map<ContentPart, ToolResultPart>()
@@ -115,6 +119,9 @@ export function project(native: Message[], entries: History, session: Session) {
     for (const message of native) {
         if (!message.id || !["user", "assistant"].includes(message.role)) continue
         const entry = byID.get(message.id)
+        // The host checkpoint is one serialized user message (summary plus
+        // <recent-context>). It is deliberately left unprojected, so it gets no
+        // IDs, nudges or compression; boundCheckpoints() bounded it above.
         if (!entry || entry.type === "compaction") continue
         const base = { sessionID: session.id, messageID: message.id }
         const parts: Part[] = []
@@ -260,5 +267,5 @@ export function project(native: Message[], entries: History, session: Session) {
     // A native checkpoint can replace every user message. Summary construction
     // still needs session/agent/model fields, without projecting that checkpoint.
     const summaryBase: WithParts = { info: info("msg_dcp_base", "user", session), parts: [] }
-    return { messages, restore, summaryBase }
+    return { messages, restore, summaryBase, checkpointBounded: native !== input }
 }

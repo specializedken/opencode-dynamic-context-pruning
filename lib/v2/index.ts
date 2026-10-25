@@ -30,6 +30,12 @@ import {
 import { countTokens, getCurrentTokenUsage } from "../token-utils"
 import { matchesGlob } from "../protected-patterns"
 import { history, project } from "./messages"
+import {
+    estimateRequestTokens,
+    hasMeasuredUsage,
+    outputBudget,
+    type ModelLimit,
+} from "./checkpoint"
 import { analyzeContextTokens } from "../commands/context"
 import { buildStatsReport } from "../commands/stats"
 import { rpc } from "./rpc"
@@ -100,7 +106,7 @@ export async function setup(ctx: Plugin.Context) {
     )
     const sessions = new Map<string, SessionState>()
     const queues = new Map<string, Promise<unknown>>()
-    const limits = new Map<string, number>()
+    const limits = new Map<string, ModelLimit>()
     const aliases: Record<string, string> = {
         task: "subagent",
         bash: "shell",
@@ -258,18 +264,27 @@ export async function setup(ctx: Plugin.Context) {
     // after it, leaving the 200000 fallback here (#658). The transform marks
     // the served limits stale; hooks re-read them from the settled registry and
     // fall back to this snapshot only when the host cannot list models.
-    let served: Promise<Map<string, number>> | undefined
+    let served: Promise<Map<string, ModelLimit>> | undefined
     await ctx.model.transform((editor) => {
         served = undefined
         limits.clear()
         for (const model of editor.list())
-            limits.set(`${model.providerID}/${model.id}`, model.limit.context)
+            limits.set(`${model.providerID}/${model.id}`, {
+                context: model.limit.context,
+                output: model.limit.output,
+            })
     })
-    async function contextLimit(model: { providerID: string; id: string }) {
+    async function modelLimit(model: {
+        providerID: string
+        id: string
+    }): Promise<ModelLimit | undefined> {
         const pending = (served ??= (async () => {
             const { data } = await ctx.model.list()
             return new Map(
-                data.map((info) => [`${info.providerID}/${info.id}`, info.limit.context]),
+                data.map((info) => [
+                    `${info.providerID}/${info.id}`,
+                    { context: info.limit.context, output: info.limit.output },
+                ]),
             )
         })())
         const key = `${model.providerID}/${model.id}`
@@ -308,7 +323,8 @@ export async function setup(ctx: Plugin.Context) {
                         }
                     }
                 }
-                state.modelContextLimit = await contextLimit(event.model)
+                const limit = await modelLimit(event.model)
+                state.modelContextLimit = limit?.context
                 state.systemPromptTokens = await countTokens(
                     event.system.map((part) => part.text).join("\n"),
                 )
@@ -317,9 +333,16 @@ export async function setup(ctx: Plugin.Context) {
                     agent: event.agent,
                     model: event.model,
                 })
+                if (view.checkpointBounded)
+                    logger.debug("V2 checkpoint recent-context bounded", {
+                        sessionID: event.sessionID,
+                        kind,
+                    })
                 stripHallucinations(view.messages, state.idFormat)
                 assignMessageRefs(state, view.messages)
-                // Compaction may select only a prefix; block origins can be in the retained tail.
+                // On V2 session.context() starts at the latest compaction; nothing
+                // before it is visible. Blocks whose anchor/origin predate it are
+                // deactivated here.
                 const blocksChanged = syncCompressionBlocks(state, logger, messages)
                 await syncToolCache(state, config, logger, view.messages)
                 buildToolIdList(state, view.messages)
@@ -368,11 +391,37 @@ export async function setup(ctx: Plugin.Context) {
                     type: "text",
                     text,
                 }))
+                // The host sized maxTokens before this hook, from its own estimate of
+                // the unbounded checkpoint (no measured usage exists yet after a
+                // compaction), which can leave only the 1024-token floor. Re-derive it
+                // for the request actually sent. Never lowers it; message bytes are
+                // untouched.
+                if (
+                    kind === "context" &&
+                    view.checkpointBounded &&
+                    limit &&
+                    typeof event.options?.maxTokens === "number" &&
+                    !hasMeasuredUsage(entries, event.model.providerID)
+                ) {
+                    const maxTokens = outputBudget(
+                        event.options.maxTokens,
+                        limit,
+                        estimateRequestTokens(event.system, event.tools, event.messages),
+                    )
+                    if (maxTokens !== event.options.maxTokens) {
+                        logger.debug("V2 maxTokens re-derived for the bounded checkpoint", {
+                            sessionID: event.sessionID,
+                            from: event.options.maxTokens,
+                            to: maxTokens,
+                        })
+                        event.options.maxTokens = maxTokens
+                    }
+                }
                 await logger.saveContext(event.sessionID, view.messages)
                 logger.debug("V2 hook applied", {
                     sessionID: event.sessionID,
                     kind,
-                    tokenUsage: getCurrentTokenUsage(state, view.messages),
+                    tokenUsage: await getCurrentTokenUsage(state, view.messages),
                     blocks: state.prune.messages.blocksById.size,
                     pruneTools: state.prune.tools.size,
                     compressPermission: state.compressPermission,
