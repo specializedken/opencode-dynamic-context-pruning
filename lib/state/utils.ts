@@ -328,6 +328,10 @@ export function getActiveSummaryTokenUsage(state: SessionState): number {
     return total
 }
 
+// Correct on both hosts. On V2 the plugin sees only entries from the latest
+// compaction onward, and the keepID tail arrives as serialized text inside the
+// checkpoint (see lib/v2/checkpoint.ts), not as messages, so no block or message
+// ref can survive a compaction there either.
 export function resetOnCompaction(state: SessionState): void {
     state.toolParameters.clear()
     state.prune.tools = new Map<string, number>()

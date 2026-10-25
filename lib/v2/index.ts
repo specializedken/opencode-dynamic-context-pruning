@@ -317,9 +317,16 @@ export async function setup(ctx: Plugin.Context) {
                     agent: event.agent,
                     model: event.model,
                 })
+                if (view.checkpointBounded)
+                    logger.debug("V2 checkpoint recent-context bounded", {
+                        sessionID: event.sessionID,
+                        kind,
+                    })
                 stripHallucinations(view.messages, state.idFormat)
                 assignMessageRefs(state, view.messages)
-                // Compaction may select only a prefix; block origins can be in the retained tail.
+                // On V2 session.context() starts at the latest compaction; nothing
+                // before it is visible. Blocks whose anchor/origin predate it are
+                // deactivated here.
                 const blocksChanged = syncCompressionBlocks(state, logger, messages)
                 await syncToolCache(state, config, logger, view.messages)
                 buildToolIdList(state, view.messages)
@@ -372,7 +379,7 @@ export async function setup(ctx: Plugin.Context) {
                 logger.debug("V2 hook applied", {
                     sessionID: event.sessionID,
                     kind,
-                    tokenUsage: getCurrentTokenUsage(state, view.messages),
+                    tokenUsage: await getCurrentTokenUsage(state, view.messages),
                     blocks: state.prune.messages.blocksById.size,
                     pruneTools: state.prune.tools.size,
                     compressPermission: state.compressPermission,
