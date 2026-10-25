@@ -21,6 +21,7 @@ export const RECENT_TRIGGER_CHARS = 120_000
 export const RECENT_MAX_CHARS = 60_000
 const PIN_MAX_CHARS = 20_000
 const MARKER_RESERVE = 200
+const ENTRY_MARKER_RESERVE = 100
 // Entry starts of the host serializer. A tool call is never separated from its
 // "[Tool result]" / "[Tool error]" lines, nor a user entry from its attachments.
 const ENTRY_START =
@@ -37,7 +38,8 @@ function isHighSurrogate(code: number): boolean {
 /**
  * Deterministically bounds the host's serialized recent context: keeps the leading
  * user instruction (the keepID entry) and the newest entries that fit, cut at entry
- * boundaries, with a plain-text marker for the omitted middle.
+ * boundaries, with a plain-text marker for the omitted middle. When the newest
+ * entry alone is over the budget, it is kept with its middle cut out instead.
  */
 export function boundRecent(recent: string): string {
     if (recent.length <= RECENT_TRIGGER_CHARS) return recent
@@ -62,18 +64,45 @@ export function boundRecent(recent: string): string {
     }
 
     const budget = RECENT_MAX_CHARS - pinned.length - MARKER_RESERVE
-    let cut = starts.find((start) => start >= pinEnd && recent.length - start <= budget)
-    if (cut === undefined) {
-        // The newest entry alone exceeds the budget: raw cut, moved to a line start
-        // when one follows, and never inside a surrogate pair.
-        cut = recent.length - budget
-        const newline = recent.indexOf("\n", cut)
-        if (newline !== -1 && newline + 1 < recent.length) cut = newline + 1
-        else if (isLowSurrogate(recent.charCodeAt(cut))) cut++
+    const head = pinned ? pinned + "\n" : ""
+    const cut = starts.find((start) => start >= pinEnd && recent.length - start <= budget)
+    if (cut !== undefined) {
+        const omitted = starts.filter((start) => start >= pinEnd && start < cut).length
+        return head + omissionMarker(omitted) + "\n" + recent.slice(cut)
     }
-    const omitted = starts.filter((start) => start >= pinEnd && start < cut).length
-    const marker = `[DCP: ${omitted} earlier entries of the recent context were omitted to fit the context window; the summary above covers them.]`
-    return (pinned ? pinned + "\n" : "") + marker + "\n" + recent.slice(cut)
+    // The newest entry alone exceeds the budget (e.g. a write() whose JSON input is
+    // one long line). Keep it, truncated in its middle: its start names the call and
+    // its end holds the "[Tool result]" lines, so the call stays with its result.
+    const last = starts[starts.length - 1]!
+    const entry = recent.slice(last)
+    const room = budget - ENTRY_MARKER_RESERVE
+    const front = safeEnd(entry, Math.floor(room / 2))
+    const back = safeStart(entry, entry.length - (room - front))
+    const omitted = starts.filter((start) => start >= pinEnd && start < last).length
+    return (
+        head +
+        omissionMarker(omitted) +
+        "\n" +
+        entry.slice(0, front) +
+        `\n[DCP: ${back - front} characters of this entry were omitted to fit the context window.]\n` +
+        entry.slice(back)
+    )
+}
+
+// No claim that the summary covers the omitted entries: after an overflow
+// compaction the host summarizes only the history before keepID.
+function omissionMarker(omitted: number): string {
+    return `[DCP: ${omitted} earlier entries of the recent context were omitted to fit the context window. Re-read files or re-run commands if their details are needed.]`
+}
+
+/** Largest end <= at that does not split a surrogate pair. */
+function safeEnd(text: string, at: number): number {
+    return at > 0 && isHighSurrogate(text.charCodeAt(at - 1)) ? at - 1 : at
+}
+
+/** Smallest start >= at that does not split a surrogate pair. */
+function safeStart(text: string, at: number): number {
+    return isLowSurrogate(text.charCodeAt(at)) ? at + 1 : at
 }
 
 function recentCandidates(entry: History[number], message: Message): string[] {
@@ -138,4 +167,76 @@ export function boundCheckpoints(native: Message[], entries: History): Message[]
         }
     }
     return output ?? native
+}
+
+export interface ModelLimit {
+    context: number
+    output: number
+}
+
+// Mirrors of OpenCode 2.1.3's output sizing (SessionModelRequest.prepare computes
+// maxTokens before the plugin hook): output cap min(limit.output || 32000, 256000),
+// floor 1024, and an input estimate of round(chars / 4) per part with a 15% margin.
+const DEFAULT_OUTPUT_CAP = 32_000
+const MAX_OUTPUT_CAP = 256_000
+const ESTIMATE_MARGIN = 0.15
+
+function estimate(text: string): number {
+    return Math.max(0, Math.round(text.length / 4))
+}
+
+/** The host's chars/4 estimate of a request (non-text parts at their JSON size). */
+export function estimateRequestTokens(
+    system: ReadonlyArray<{ text: string }>,
+    tools: Record<string, { description: string; input: unknown }>,
+    messages: ReadonlyArray<Message>,
+): number {
+    let total = 0
+    for (const part of system) total += estimate(part.text)
+    for (const [name, definition] of Object.entries(tools))
+        total += estimate(name + definition.description + (JSON.stringify(definition.input) ?? ""))
+    for (const message of messages)
+        for (const part of message.content) {
+            if (part.type === "text" || part.type === "reasoning") total += estimate(part.text)
+            else if (part.type === "tool-call")
+                total += estimate(part.name + (JSON.stringify(part.input) ?? ""))
+            else total += estimate(JSON.stringify(part) ?? "")
+        }
+    return total
+}
+
+/**
+ * Whether the host sized this request from measured usage: an assistant entry of
+ * this provider, without error, that reports input tokens. The host's estimate then
+ * covers only entries after it, so the checkpoint size did not enter it.
+ */
+export function hasMeasuredUsage(entries: History, providerID: string): boolean {
+    return entries.some((entry) => {
+        const loose = entry as {
+            type?: string
+            error?: unknown
+            model?: { providerID?: string }
+            tokens?: { input?: number; cache?: { read?: number; write?: number } }
+        }
+        const tokens = loose.tokens
+        return (
+            loose.type === "assistant" &&
+            loose.model?.providerID === providerID &&
+            !loose.error &&
+            tokens !== undefined &&
+            (tokens.input ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0) > 0
+        )
+    })
+}
+
+/**
+ * maxTokens for a request of `estimated` input tokens, by the host's own formula;
+ * never below `current` (the host's value), so it can only undo the shrink caused
+ * by the host estimating the unbounded checkpoint.
+ */
+export function outputBudget(current: number, limit: ModelLimit, estimated: number): number {
+    if (!(limit.context > 0)) return current
+    const cap = Math.min(limit.output > 0 ? limit.output : DEFAULT_OUTPUT_CAP, MAX_OUTPUT_CAP)
+    const fit = limit.context - Math.ceil(estimated * (1 + ESTIMATE_MARGIN))
+    return Math.max(current, Math.min(cap, fit))
 }

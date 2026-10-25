@@ -328,14 +328,22 @@ export function getActiveSummaryTokenUsage(state: SessionState): number {
     return total
 }
 
-// Correct on both hosts. On V2 the plugin sees only entries from the latest
-// compaction onward, and the keepID tail arrives as serialized text inside the
-// checkpoint (see lib/v2/checkpoint.ts), not as messages, so no block or message
-// ref can survive a compaction there either.
+// On V2 the plugin sees only entries from the latest compaction onward; the
+// keepID tail arrives as serialized text inside the checkpoint (see
+// lib/v2/checkpoint.ts), not as messages, so no block or message ref survives a
+// compaction as such. That text can still cite old block IDs (@b21@ in the
+// model's own reasoning or compress inputs), so block numbering keeps counting
+// up instead of restarting at 1: a new block never reuses an ID still visible
+// there. nextBlockId is persisted, so this holds across restarts. Message refs
+// are not persisted and are reassigned from 1 on every restart, so they restart
+// here too; keeping them counting up would change message bytes after a restart.
 export function resetOnCompaction(state: SessionState): void {
     state.toolParameters.clear()
     state.prune.tools = new Map<string, number>()
+    const nextBlockId = state.prune.messages.nextBlockId
     state.prune.messages = createPruneMessagesState()
+    if (Number.isInteger(nextBlockId) && nextBlockId > 1)
+        state.prune.messages.nextBlockId = nextBlockId
     state.messageIds = {
         byRawId: new Map<string, string>(),
         byRef: new Map<string, string>(),

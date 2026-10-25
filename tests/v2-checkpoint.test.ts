@@ -10,6 +10,12 @@ import {
 } from "../lib/v2/checkpoint"
 import { project } from "../lib/v2/messages"
 import { createSessionState, type CompressionBlock } from "../lib/state"
+import {
+    loadPruneMessagesState,
+    resetOnCompaction,
+    serializePruneMessagesState,
+} from "../lib/state/utils"
+import { allocateBlockId } from "../lib/compress/state"
 import { assignMessageRefs } from "../lib/message-ids"
 import { injectMessageIds, prune } from "../lib/messages"
 import { countTokens } from "../lib/token-utils"
@@ -143,6 +149,9 @@ test("p2-09 B: a whole autonomous run kept as recent-context is bounded to fit",
     assert.equal(lines[0], LEAD)
     const marker = lines[1]!.match(/^\[DCP: (\d+) earlier entries of the recent context/)
     assert.ok(marker, lines[1])
+    // After an overflow compaction the host summarizes only the history before
+    // keepID, so the marker must not claim the summary covers the omitted entries.
+    assert.ok(!/summary/i.test(lines[1]!), lines[1])
     const kept = bounded.slice(LEAD.length + 1 + lines[1]!.length + 1)
     assert.ok(kept.startsWith("[Assistant"), "the kept tail starts at an entry boundary")
     assert.ok(recent.endsWith("\n" + kept), "the kept tail is the original newest entries")
@@ -179,28 +188,55 @@ test("bounding is deterministic and stable across later requests", () => {
     assert.equal(JSON.stringify(next[0]), JSON.stringify(first[0]))
 })
 
-test("an oversized newest entry is hard-capped without splitting a surrogate pair", () => {
-    const huge = `[Assistant tool call]: write({"content":"` + "z".repeat(200_000) + `"})`
-    const recent = [LEAD, entryText(1), huge].join("\n")
-    const budget = RECENT_MAX_CHARS - LEAD.length - 200
-    // Put an emoji right on the raw cut position, with no newline after it.
-    const cutAt = recent.length - budget
-    const withEmoji = recent.slice(0, cutAt - 1) + "\u{1F600}" + recent.slice(cutAt + 1)
-    assert.equal(withEmoji.length, recent.length)
-    const bounded = boundRecent(withEmoji)
+test("an oversized one-line newest entry is truncated inside, keeping call and result", () => {
+    // A write() whose JSON input has no real newline, larger than the whole budget.
+    const call =
+        `[Assistant tool call]: write({"filePath":"src/app.ts","content":"` +
+        "z".repeat(70_000) +
+        `"})`
+    const older = Array.from({ length: 40 }, (_, i) => `[Assistant]: step ${i} ` + "w".repeat(2000))
+    const recent = [
+        "[User]: go",
+        ...older,
+        call + "\n[Tool result]: Wrote file successfully.",
+    ].join("\n")
+    assert.ok(recent.length > RECENT_TRIGGER_CHARS)
+    const bounded = boundRecent(recent)
     assert.ok(bounded.length <= RECENT_MAX_CHARS, `bounded to ${bounded.length}`)
+    assert.ok(bounded.length > RECENT_MAX_CHARS - 1000, "the budget is used, not thrown away")
     const lines = bounded.split("\n")
-    assert.equal(lines[0], LEAD)
-    // The two entries of entryText(1) plus the partially kept oversized one.
-    assert.match(lines[1]!, /^\[DCP: 3 earlier entries/)
-    const kept = bounded.slice(LEAD.length + 1 + lines[1]!.length + 1)
-    assert.ok(!/^[\uDC00-\uDFFF]/.test(kept), "no lone low surrogate")
-    assert.ok(withEmoji.endsWith(kept))
+    assert.equal(lines[0], "[User]: go")
+    assert.match(lines[1]!, /^\[DCP: 40 earlier entries of the recent context were omitted/)
+    assert.ok(lines[2]!.startsWith(`[Assistant tool call]: write({"filePath":"src/app.ts"`))
+    assert.match(lines[3]!, /^\[DCP: \d+ characters of this entry were omitted/)
+    assert.equal(lines[4]!.slice(-3), `"})`)
+    assert.equal(lines[5], "[Tool result]: Wrote file successfully.")
+    assert.equal(lines.length, 6)
+    assert.equal(boundRecent(recent), bounded, "deterministic")
+})
 
-    // With a newline after the raw cut, the cut moves to the next line start.
-    const lined = [LEAD, entryText(1), huge, "[Tool result]: done"].join("\n")
-    const tail = boundRecent(lined).split("\n").slice(2).join("\n")
-    assert.equal(tail, "[Tool result]: done")
+test("an oversized newest entry never splits a surrogate pair", () => {
+    const LEAD_LEN = LEAD.length
+    for (const shift of [-2, -1, 0, 1, 2]) {
+        const body = "z".repeat(200_000)
+        const huge = `[Assistant tool call]: write({"content":"` + body + `"})`
+        const recent = [LEAD, entryText(1), huge].join("\n")
+        // Put emoji around both inner cut positions.
+        const room = RECENT_MAX_CHARS - LEAD_LEN - 200 - 100
+        const last = recent.length - huge.length
+        const front = last + Math.floor(room / 2) + shift
+        const back = recent.length - Math.ceil(room / 2) + shift
+        let withEmoji = recent
+        for (const at of [front, back])
+            withEmoji = withEmoji.slice(0, at - 1) + "\u{1F600}" + withEmoji.slice(at + 1)
+        assert.equal(withEmoji.length, recent.length)
+        const bounded = boundRecent(withEmoji)
+        assert.ok(bounded.length <= RECENT_MAX_CHARS, `bounded to ${bounded.length}`)
+        assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(bounded), "no lone high surrogate")
+        assert.ok(!/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(bounded), "no lone low surrogate")
+        // The two entries of entryText(1) are omitted whole.
+        assert.match(bounded.split("\n")[1]!, /^\[DCP: 2 earlier entries/)
+    }
 })
 
 test("without a leading user entry nothing is pinned", () => {
@@ -296,4 +332,21 @@ test("the bounded checkpoint flows through the DCP pipeline verbatim", () => {
     const after = JSON.stringify(restored.slice(1))
     assert.ok(after.includes("DCP_SUMMARY"), "DCP summaries stay after the checkpoint")
     assert.ok(/@\d+@/.test(after), "post-compaction messages still get IDs")
+})
+
+test("block IDs keep counting up across a compaction (the tail can still cite them)", async () => {
+    // p2-09 B: the bounded recent-context still cites @b19@..@b21@ in the model's
+    // reasoning. A new block must not reuse one of those IDs.
+    const state = createSessionState("compact")
+    for (let i = 0; i < 21; i++) allocateBlockId(state)
+    state.messageIds.nextRef = 300
+    resetOnCompaction(state)
+    assert.equal(state.prune.messages.blocksById.size, 0)
+    assert.equal(allocateBlockId(state), 22)
+    // Message refs are not persisted and restart at 1 on every reload, so they
+    // restart here as well (same bytes before and after a restart).
+    assert.equal(state.messageIds.nextRef, 1)
+    // The counter survives a restart through the persisted prune state.
+    const reloaded = await loadPruneMessagesState(serializePruneMessagesState(state.prune.messages))
+    assert.equal(reloaded.nextBlockId, 23)
 })
