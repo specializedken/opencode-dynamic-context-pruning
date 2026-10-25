@@ -138,6 +138,13 @@ export function assignMessageRefs(state: SessionState, messages: WithParts[]): n
             continue
         }
 
+        // V2 history() keeps a completed compaction as an empty summary marker. It never
+        // reaches a request, so numbering it would shift every later ref on the tool path
+        // (prepareSession) but not after a restart, which rebuilds refs from requests only.
+        if ((message.info as { summary?: boolean }).summary === true && !message.parts?.length) {
+            continue
+        }
+
         const rawMessageId = message.info.id
         if (typeof rawMessageId !== "string" || rawMessageId.length === 0) {
             continue

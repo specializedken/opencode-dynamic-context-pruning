@@ -224,3 +224,30 @@ test("assignMessageRefs after prune prevents orphan aliases (RED->GREEN: fails o
         "pruned message should NOT have an alias — leak if it does",
     )
 })
+
+test("assignMessageRefs skips the empty V2 compaction marker so tool-path and request refs agree", () => {
+    const msg = (id: string, role: string, created: number, extra: Record<string, unknown> = {}) =>
+        ({
+            info: { id, role, sessionID: "ses_marker", time: { created }, ...extra },
+            parts: extra.summary ? [] : [{ type: "text", text: id }],
+        }) as unknown as WithParts
+    const before = msg("msg_a7", "assistant", 1)
+    const marker = msg("msg_cp", "assistant", 2, { summary: true })
+    const call = msg("msg_c3", "assistant", 3)
+    const next = msg("msg_u10", "user", 4)
+
+    // Tool path: prepareSession numbers history(), which includes the marker.
+    const live = createSessionState()
+    assignMessageRefs(live, [before])
+    assignMessageRefs(live, [before, marker, call])
+    assignMessageRefs(live, [before, call, next])
+
+    // Restart: refs rebuilt from the request view, which never has the marker.
+    const restarted = createSessionState()
+    assignMessageRefs(restarted, [before, call, next])
+
+    assert.equal(live.messageIds.byRawId.get("msg_cp"), undefined)
+    for (const id of ["msg_a7", "msg_c3", "msg_u10"]) {
+        assert.equal(live.messageIds.byRawId.get(id), restarted.messageIds.byRawId.get(id), id)
+    }
+})
