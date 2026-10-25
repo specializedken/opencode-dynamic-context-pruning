@@ -1,4 +1,5 @@
 import type { CompressionBlock, SessionState } from "../state"
+import { isCompressInputStub } from "./input-stub"
 import { NON_EMPTY_ARRAY_ERROR_MESSAGE, isStringFields, normalizeCompressArgs } from "./args"
 import { resolveAnchorMessageId, resolveBoundaryIds, resolveSelection } from "./search"
 import type { IdFormat } from "../message-ids"
@@ -58,6 +59,12 @@ export function validateArgs(args: CompressRangeToolArgs): void {
 
         if (typeof entry?.summary !== "string" || entry.summary.trim().length === 0) {
             throw new Error(`${prefix}.summary is required and must be a non-empty string`)
+        }
+
+        if (isCompressInputStub(entry.summary)) {
+            throw new Error(
+                `${prefix}.summary is the placeholder DCP leaves in earlier compress calls; write the full technical summary for this range`,
+            )
         }
     }
 }

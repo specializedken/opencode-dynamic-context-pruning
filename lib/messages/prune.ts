@@ -7,6 +7,7 @@ import { getLastUserMessage } from "./query"
 import type { UserMessage } from "@opencode-ai/sdk/v2"
 import { formatBlockRef } from "../message-ids"
 import { getAmbiguousToolIds } from "../tool-ids"
+import { stubCompressCallInputs, withConsumedBlocks } from "../compress/input-stub"
 
 const PRUNED_TOOL_OUTPUT_REPLACEMENT =
     "[Output removed to save context - information superseded or no longer needed]"
@@ -22,7 +23,10 @@ export const prune = (
 ): void => {
     // Legacy persisted call IDs must not remove multiple tool occurrences.
     for (const id of getAmbiguousToolIds(messages)) state.prune.tools.delete(id)
-    filterCompressedRanges(state, logger, config, messages, summaryBase)
+    const renderedBlockIds = filterCompressedRanges(state, logger, config, messages, summaryBase)
+    // Runs where blocks are applied: the request already changes at the block anchor,
+    // which precedes the compress call, so stubbing its input costs no extra cache.
+    stubCompressCallInputs(state, messages, withConsumedBlocks(state, renderedBlockIds))
     // pruneFullTool(state, logger, messages)
     pruneToolOutputs(state, logger, messages)
     pruneToolInputs(state, logger, messages)
@@ -167,12 +171,13 @@ const filterCompressedRanges = (
     config: PluginConfig,
     messages: WithParts[],
     summaryBase?: WithParts,
-): void => {
+): Set<number> => {
+    const rendered = new Set<number>()
     if (
         state.prune.messages.byMessageId.size === 0 &&
         state.prune.messages.activeByAnchorMessageId.size === 0
     ) {
-        return
+        return rendered
     }
 
     const result: WithParts[] = []
@@ -218,6 +223,7 @@ const filterCompressedRanges = (
                     result.push(
                         createSyntheticUserMessage(userMessage, summaryContent, summarySeed),
                     )
+                    rendered.add(summary.blockId)
 
                     logger.info("Injected compress summary", {
                         anchorMessageId: msgId,
@@ -244,4 +250,5 @@ const filterCompressedRanges = (
     // Replace messages array contents
     messages.length = 0
     messages.push(...result)
+    return rendered
 }
